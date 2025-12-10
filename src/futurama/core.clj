@@ -893,3 +893,25 @@
     c)
   (cancelled? [c]
     (get-cancel-state c)))
+
+(defn ->future
+  "Converts any value into a CompletableFuture, reading
+  through any async result returned inside or returning
+  a completed future for non-async objects."
+  [val]
+  (cond
+    (instance? CompletableFuture val)
+    val
+
+    (async? val)
+    (let [fut (CompletableFuture.)]
+      (async
+        (try
+          (let [res (!<! val)]
+            (impl/complete! fut res))
+          (catch Throwable rex
+            (impl/complete! fut rex))))
+      fut)
+
+    :else
+    (CompletableFuture/completedFuture val)))

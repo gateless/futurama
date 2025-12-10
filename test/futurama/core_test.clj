@@ -512,3 +512,20 @@
             (!<! (async
                    (throw (ex-info "foobar" {}))
                    ::result))))))))
+
+(deftest test-future-conversion
+  (testing "can convert any async result to CompletableFuture"
+    (let [fut (f/->future (async ::foobar))]
+      (is (= ::foobar @fut))))
+  (testing "can convert any thread result to CompletableFuture"
+    (let [fut (f/->future (thread ::foobar))]
+      (is (= ::foobar @fut))))
+  (testing "can use CompletableFuture as CompletableFuture"
+    (let [fut' (CompletableFuture/completedFuture ::foobar)
+          fut (f/->future fut')]
+      (is (= ::foobar @fut))
+      (is (identical? fut' fut))))
+  (testing "can use non-async value as CompletableFuture"
+    (let [val ::foobar
+          fut (f/->future val)]
+      (is (= ::foobar @fut)))))

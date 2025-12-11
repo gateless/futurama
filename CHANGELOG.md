@@ -1,5 +1,8 @@
 This is a history of changes to gateless/futurama
 
+# 1.4.2
+* **Feature**: Add utility `->future` function to easily convert values to future.
+
 # 1.4.1
 * **Bug Fix**: Ensure future is only cancelled if async item was cancelled.
 

@@ -807,7 +807,7 @@
     (let [^BiConsumer invoke-cb (impl/->JavaBiConsumer
                                  (fn [_ _]
                                    (when (impl/cancelled? fut)
-                                     (future-cancel fut'))))] ;;; cancel any linked future
+                                     (impl/cancel! fut'))))] ;;; cancel any linked future
       (.whenComplete ^CompletableFuture fut ^BiConsumer invoke-cb)
       fut))
   (cancel! [fut]
@@ -861,7 +861,7 @@
   (on-cancel-interrupt [dfd fut]
     (let [interrupt-handler (fn [_]
                               (when (impl/cancelled? dfd)
-                                (future-cancel fut)))]
+                                (impl/cancel! fut)))]
       (d/on-realized dfd interrupt-handler interrupt-handler)
       dfd))
   (cancelled? [dfd]
@@ -889,7 +889,30 @@
                (instance? PromiseBuffer))
       (async/take! c (fn [_]
                        (when (impl/cancelled? c)
-                         (future-cancel fut)))))
+                         (impl/cancel! fut)))))
     c)
   (cancelled? [c]
     (get-cancel-state c)))
+
+(defn ->future
+  "Converts any value into a CompletableFuture, reading
+  through any async result returned inside or returning
+  a completed future for non-async objects."
+  [val]
+  (cond
+    (instance? CompletableFuture val)
+    val
+
+    (async? val)
+    (let [fut (CompletableFuture.)]
+      (impl/on-cancel-interrupt fut val)
+      (async
+        (try
+          (let [res (!<! val)]
+            (impl/complete! fut res))
+          (catch Throwable rex
+            (impl/complete! fut rex))))
+      fut)
+
+    :else
+    (CompletableFuture/completedFuture val)))

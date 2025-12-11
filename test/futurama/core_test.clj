@@ -51,6 +51,31 @@
     (Executors/newFixedThreadPool 10)))
 
 (deftest cancel-async-test
+  (testing "cancellable ->future is interrupted test"
+    (with-pool @test-pool
+      (let [interrupted (atom false)
+            a (promise)
+            s (atom 0)
+            f (future
+                (try
+                  (while (not (async-cancelled?)) ;;; this loop goes on infinitely until the thread is interrupted
+                    (Thread/sleep 90)
+                    (println "thread looping..." (swap! s inc)))
+                  (println "ended thread looping.")
+                  (deliver a true)
+                  (catch InterruptedException e
+                    (println "interrupted looping by:" (type e))
+                    (reset! interrupted true)
+                    (deliver a true))))
+            f' (f/->future f)]
+        (is (true? (async-cancellable? f)))
+        (go
+          (<! (timeout 100))
+          (async-cancel! f')) ;;; cancelling the ->future causes the converted async object to be interrupted
+        (is (true? @a))
+        (is (true? (async-cancelled? f)))
+        (is (true? (async-completed? f)))
+        (is (true? @interrupted)))))
   (testing "cancellable future is interrupted test"
     (with-pool @test-pool
       (let [interrupted (atom false)
@@ -512,3 +537,23 @@
             (!<! (async
                    (throw (ex-info "foobar" {}))
                    ::result))))))))
+
+(deftest test-future-conversion
+  (testing "can convert any async result to CompletableFuture - success"
+    (let [fut (f/->future (async ::foobar))]
+      (is (= ::foobar @fut))))
+  (testing "can convert any async result to CompletableFuture - failure"
+    (let [fut (f/->future (async (throw (ex-info "foobar" {}))))]
+      (is (thrown-with-msg? Exception #"foobar" @fut))))
+  (testing "can convert any thread result to CompletableFuture"
+    (let [fut (f/->future (thread ::foobar))]
+      (is (= ::foobar @fut))))
+  (testing "can use CompletableFuture as CompletableFuture"
+    (let [fut' (CompletableFuture/completedFuture ::foobar)
+          fut (f/->future fut')]
+      (is (= ::foobar @fut))
+      (is (identical? fut' fut))))
+  (testing "can use non-async value as CompletableFuture"
+    (let [val ::foobar
+          fut (f/->future val)]
+      (is (= ::foobar @fut)))))

@@ -1,5 +1,4 @@
 (ns ^:no-doc futurama.impl
-  (:refer-clojure :exclude [realized?])
   (:require
    [clojure.core.async :refer [take!]]
    [clojure.core.async.impl.go :as go-impl]
@@ -7,8 +6,9 @@
    [clojure.core.async.impl.protocols :as core-impl])
   (:import
    [java.util.concurrent
-    ExecutorService
-    Future]
+    Executor
+    Future
+    FutureTask]
    [java.util.concurrent.locks Lock]
    [java.util.function BiConsumer]))
 
@@ -42,8 +42,9 @@
 
 (defn async-dispatch-task-handler
   "Dispatches a task to the given executor service pool, and registers a cancellation handler on the port."
-  ^Future [^ExecutorService pool port ^Runnable task]
-  (let [^Future fut (.submit pool task)]
+  ^Future [^Executor pool port ^Runnable task]
+  (let [fut (FutureTask. ^Runnable task nil)]
+    (.execute pool fut)
     (on-cancel-interrupt port fut)
     port))
 

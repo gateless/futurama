@@ -12,7 +12,7 @@ jobs:
   test:
     strategy:
       matrix:
-        java_version: [corretto-24]
+        java_version: [corretto-25]
         test_clojure_alias: [clojure-1.12]
         test_core_async_alias: [core.async-1.8, core.async-1.9]
       fail-fast: false

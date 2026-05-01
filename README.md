@@ -391,7 +391,7 @@ Configure application-wide thread pools using the Java system property `futurama
                     "clojure.core.async.impl.dispatch/executor-for")
 ```
 
-The factory function receives a keyword (`:io`, `:compute`, `:mixed`) and should return an `ExecutorService` or `nil` to use defaults.
+The factory function receives a keyword (`:io`, `:compute`, `:mixed`) and should return an `Executor` or `nil` to use defaults.
 
 ### Exception Handling
 

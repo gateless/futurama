@@ -1,10 +1,10 @@
 .PHONY: repl test clean deploy install format-check format-fix
 
 TEST_CLOJURE_ALIAS ?= clojure-1.12
-TEST_CORE_ASYNC_ALIAS ?= core.async-1.8
+TEST_CORE_ASYNC_ALIAS ?= core.async-1.9
 
 REPL_CLOJURE_ALIAS ?= clojure-1.12
-REPL_CORE_ASYNC_ALIAS ?= core.async-1.8
+REPL_CORE_ASYNC_ALIAS ?= core.async-1.9
 
 SHELL := /bin/bash
 JAVA_OPTS ?= -Dfuturama.executor-factory=clojure.core.async.impl.dispatch/executor-for

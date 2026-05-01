@@ -5,9 +5,9 @@
   <groupId>com.github.gateless</groupId>
   <artifactId>futurama</artifactId>
   <name>futurama</name>
-  <version>1.4.3</version>
+  <version>1.4.4</version>
   <scm>
-    <tag>1.4.3</tag>
+    <tag>1.4.4</tag>
     <url>https://github.com/gateless/futurama</url>
     <connection>scm:git:git://github.com/gateless/futurama.git</connection>
     <developerConnection>scm:git:ssh://git@github.com/gateless/futurama.git</developerConnection>

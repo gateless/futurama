@@ -1,6 +1,6 @@
 This is a history of changes to gateless/futurama
 
-# 1.4.4
+# 1.4.5
 * **Dispatch**: `async-dispatch-task-handler` now accepts any `java.util.concurrent.Executor` (previously required `ExecutorService`). Tasks are wrapped in a `FutureTask` so cancel-with-interrupt and exception-capture semantics are preserved. Required to support core.async 1.9's `clojure.core.async.impl.dispatch/executor-for`, which returns a plain `Executor`.
 * **Default pool**: `get-pool` now falls back to `clojure.core.async.impl.dispatch/executor-for` (was `ForkJoinPool/commonPool`). Out of the box, futurama dispatches over the same workload-aware pools as core.async — no `futurama.executor-factory` sysprop required for that behavior. The sysprop remains the override hook.
 * **Tooling**: Bumped CI and `.mise.toml` JDK to corretto-25 (latest LTS); updated `.mise.toml` to the new `[tool_alias]` schema; default `TEST_CORE_ASYNC_ALIAS` flipped to `core.async-1.9` in the Makefile.

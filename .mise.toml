@@ -1,6 +1,6 @@
-[alias]
+[tool_alias]
 clojure = "https://github.com/asdf-community/asdf-clojure.git"
 
 [tools]
 clojure = "1.12"
-java = "graalvm-22.3.1+java11"
+java = "corretto-25"

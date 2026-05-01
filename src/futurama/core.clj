@@ -1,12 +1,10 @@
 (ns futurama.core
   "Futurama is a Clojure library for more deeply integrating async abstractions in the Clojure and JVM ecosystem with Clojure.
-
-  async and thread blocks are dispatched over an internal thread pool,
-  which defaults to using the `ForkJoinPool/commonPool`. They work very
-  similarly to core.async go blocks and thread blocks. Notable different
-  ways are that, async and thread blocks will return Throwable values when
-  exceptions are uncaught, and that taking a value from an async result
-  using `!<!` or `!<!!` will reduce nested async values to a single result.
+  Async and thread blocks are dispatched over an internal thread pool.
+  They work very similarly to core.async go blocks and thread blocks.
+  Notable different ways are that, async and thread blocks will return caught
+  exceptions, and that taking a value from an async result using `!<!` or `!<!!`
+  will reduce nested async values to a single result.
 
   The dynamic variables `*async-factory*` and `*thread-factory*` can be bound
   to control which async result type is returned when the `async` or `thread`
@@ -20,14 +18,15 @@
   - `async-deferred-factory`: creates a manifold deferred result.
   - `async-future-factory`: creates a CompletableFuture result.
 
+  By default, futurama will defer to a user factory (if provided via sys prop `futurama.executor-factory`)
+  or the using the same pool as core.async via `clojure.core.async.impl.dispatch/executor-for`
+
   Use the Java system property `futurama.executor-factory`
-  to specify a function that will provide ExecutorServices for
+  to specify a function that will provide an Executor for
   application-wide use by futurama in lieu of its defaults.
-  To ensure that futurama uses the same thread pool as core.async,
-  you can set the property to the value `clojure.core.async.impl.dispatch/executor-for`.
   The property value should name a fully qualified var. The function
   will be passed a keyword indicating the context of use of the
-  executor, and should return either an ExecutorService, or nil to
+  executor, and should return either an Executor, or nil to
   use the default. Results per keyword will be cached and used for
   the remainder of the application.
 
@@ -65,8 +64,7 @@
             CompletionException
             ExecutionException
             CancellationException
-            ExecutorService
-            ForkJoinPool
+            Executor
             Future]
            [java.util.concurrent.locks Lock]
            [java.util.function BiConsumer]
@@ -149,22 +147,20 @@
     (async-future-factory)))
 
 (def get-pool
-  "Given a workload tag, returns an ExecutorService instance and memoizes the result.
-  By default, futurama will defer to a user factory (if provided via sys prop)
-  or the `ForkJoinPool/commonPool` instance. When using core.async 1.7 or higher it's possible to
-  set the `futurama.executor-factory` property to `clojure.core.async.impl.dispatch/executor-for`
-  and futurama will use the same pools as core.async."
+  "Given a workload tag, returns an Executor instance and memoizes the result.
+  By default, futurama will defer to a user factory (if provided via sys prop `futurama.executor-factory`)
+  or the using the same pool as core.async via `clojure.core.async.impl.dispatch/executor-for`"
   (memoize
-   (fn ^ExecutorService [workload]
+   (fn ^Executor [workload]
      (let [sysprop-factory (when-let [esf (System/getProperty "futurama.executor-factory")]
                              (requiring-resolve (symbol esf)))
            sp-exec (and sysprop-factory (sysprop-factory workload))]
        (or sp-exec
-           (ForkJoinPool/commonPool))))))
+           (run-impl/executor-for workload))))))
 
 (defmacro with-pool
   "Utility macro which binds *thread-pool* to the supplied pool and then evaluates the `body`.
-  The `pool` can be an ExecutorService or can also be a keyword/string to be passed to the `futurama.executor-factory`"
+  The `pool` can be an Executor or can also be a keyword/string to be passed to the `futurama.executor-factory`"
   [pool & body]
   `(let [pool# ~pool]
      (binding [*thread-pool* (if (keyword? pool#)

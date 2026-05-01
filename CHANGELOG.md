@@ -1,5 +1,9 @@
 This is a history of changes to gateless/futurama
 
+# 1.4.3
+* **Dependencies**: Updated core.async to stable 1.9.865 (default), Clojure to 1.12.4, manifold to 0.5.0, Caffeine to 3.2.3.
+* **Tooling**: Updated clj-kondo to 2026.04.15 and kaocha to 1.91.1392.
+
 # 1.4.2
 * **Feature**: Add utility `->future` function to easily convert values to future.
 

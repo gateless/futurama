@@ -64,6 +64,7 @@
             CompletionException
             ExecutionException
             CancellationException
+            ExecutorService
             Executor
             Future]
            [java.util.concurrent.locks Lock]
@@ -151,12 +152,13 @@
   By default, futurama will defer to a user factory (if provided via sys prop `futurama.executor-factory`)
   or the using the same pool as core.async via `clojure.core.async.impl.dispatch/executor-for`"
   (memoize
-   (fn ^Executor [workload]
+   (fn ^ExecutorService [workload]
      (let [sysprop-factory (when-let [esf (System/getProperty "futurama.executor-factory")]
                              (requiring-resolve (symbol esf)))
-           sp-exec (and sysprop-factory (sysprop-factory workload))]
-       (or sp-exec
-           (run-impl/executor-for workload))))))
+           sp-exec (and sysprop-factory (sysprop-factory workload))
+           ^Executor executor (or sp-exec
+                                  (run-impl/executor-for workload))]
+       (impl/->executor-service executor)))))
 
 (defmacro with-pool
   "Utility macro which binds *thread-pool* to the supplied pool and then evaluates the `body`.

@@ -6,9 +6,12 @@
    [clojure.core.async.impl.protocols :as core-impl])
   (:import
    [java.util.concurrent
+    AbstractExecutorService
+    ExecutorService
     Executor
     Future
     FutureTask]
+   [java.util Collections]
    [java.util.concurrent.locks Lock]
    [java.util.function BiConsumer]))
 
@@ -39,6 +42,35 @@
   BiConsumer
   (accept [_ a b]
     (f a b)))
+
+(defn ->executor-service
+  "Converts an Executor to an ExecutorService, if necessary by wrapping it in a proxy.
+  Note that the returned ExecutorService will not support shutdown or termination operations,
+  and will not report itself as shutdown or terminated."
+  ^ExecutorService [^Executor executor]
+  (if (instance? ExecutorService executor)
+    executor
+    (let [active (volatile! true)])
+    (proxy [AbstractExecutorService] []
+      (execute [^Runnable command]
+        (if @active
+          (.execute executor command)
+          (throw (IllegalStateException. "ExecutorService is shutdown"))))
+
+      (shutdown []
+        (vreset! active false))
+
+      (shutdownNow []
+        (java.util.Collections/emptyList))
+
+      (isShutdown []
+        false)
+
+      (isTerminated []
+        false)
+
+      (awaitTermination [wait-timeout wait-unit]
+        false))))
 
 (defn async-dispatch-task-handler
   "Dispatches a task to the given executor service pool, and registers a cancellation handler on the port."

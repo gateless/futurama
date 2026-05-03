@@ -1,5 +1,10 @@
 This is a history of changes to gateless/futurama
 
+# 1.4.6
+* **Pool contract**: `get-pool` once again returns an `ExecutorService` (1.4.5 had narrowed the return type to `Executor` to track core.async 1.9's `executor-for`, which broke downstream consumers that called `.submit`/`.invokeAll` on the pool). When `executor-for` returns a plain `Executor`, the result is widened via a new `futurama.impl/->executor-service` proxy that forwards `execute`; real `ExecutorService` instances pass through unwrapped. The internal `async-dispatch-task-handler` continues to accept any `Executor`.
+* **Proxy lifecycle**: The widening proxy throws `UnsupportedOperationException` from `shutdown`, `shutdownNow`, `isShutdown`, `isTerminated`, and `awaitTermination` — it does not own the underlying executor and refuses to lie about its lifecycle. Callers that need to manage a pool's lifecycle should hold a reference to the original `Executor` directly.
+* **Tests**: Added coverage for `->executor-service` (passthrough vs. wrap, `execute`/`submit` routing, lifecycle behavior on both branches) and for the previously-untested `with-async-factory` and `with-thread-factory` macros (binding/restore, precedence, nesting, exception unwind).
+
 # 1.4.5
 * **Dispatch**: `async-dispatch-task-handler` now accepts any `java.util.concurrent.Executor` (previously required `ExecutorService`). Tasks are wrapped in a `FutureTask` so cancel-with-interrupt and exception-capture semantics are preserved. Required to support core.async 1.9's `clojure.core.async.impl.dispatch/executor-for`, which returns a plain `Executor`.
 * **Default pool**: `get-pool` now falls back to `clojure.core.async.impl.dispatch/executor-for` (was `ForkJoinPool/commonPool`). Out of the box, futurama dispatches over the same workload-aware pools as core.async — no `futurama.executor-factory` sysprop required for that behavior. The sysprop remains the override hook.

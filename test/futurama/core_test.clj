@@ -8,9 +8,10 @@
                                    async-cancel! async-cancellable? async-completed?
                                    async-cancelled? async-every? async-for async-map
                                    async-postwalk async-prewalk async-reduce async-some
-                                   async? get-pool thread with-pool] :as f])
+                                   async? get-pool thread with-pool] :as f]
+            [futurama.impl :as impl])
   (:import [clojure.lang ExceptionInfo]
-           [java.util.concurrent CompletableFuture Executors]))
+           [java.util.concurrent CompletableFuture Executor ExecutorService Executors TimeUnit]))
 
 (defn async-fixture
   [f]
@@ -105,7 +106,7 @@
       (let [interrupted (atom false)
             a (promise)
             s (atom 0)
-            f (f/thread
+            f (thread
                 (try
                   (while (not (async-cancelled?)) ;;; this loop goes on infinitely until the thread is interrupted
                     (Thread/sleep 90)
@@ -131,7 +132,7 @@
       (let [interrupted (atom false)
             a (promise)
             s (atom 0)
-            f (f/async
+            f (async
                 (try
                   (while (not (async-cancelled?)) ;;; this loop goes on infinitely until the thread is interrupted
                     (Thread/sleep 90)
@@ -557,3 +558,130 @@
     (let [val ::foobar
           fut (f/->future val)]
       (is (= ::foobar @fut)))))
+
+(deftest ->executor-service-test
+  (testing "ExecutorService is returned identically (no double-wrapping)"
+    (let [es (Executors/newSingleThreadExecutor)]
+      (try
+        (is (identical? es (impl/->executor-service es)))
+        (finally
+          (.shutdown es)))))
+  (testing "plain Executor is wrapped and routes execute to the underlying executor"
+    (let [calls (atom 0)
+          last-runnable (atom nil)
+          ^Executor e (reify Executor
+                        (execute [_ r]
+                          (swap! calls inc)
+                          (reset! last-runnable r)
+                          (.run r)))
+          es (impl/->executor-service e)
+          ran (atom false)]
+      (is (instance? ExecutorService es))
+      (is (not (identical? e es)))
+      (.execute es ^Runnable #(reset! ran true))
+      (is (= 1 @calls))
+      (is (true? @ran))
+      (is (some? @last-runnable))))
+  (testing "submit on the wrapper routes through the underlying executor and returns a Future"
+    (let [calls (atom 0)
+          ^Executor e (reify Executor
+                        (execute [_ r]
+                          (swap! calls inc)
+                          (.run r)))
+          es (impl/->executor-service e)
+          fut (.submit es ^Callable (fn [] ::done))]
+      (is (= 1 @calls))
+      (is (= ::done (.get fut)))))
+  (testing "lifecycle methods throw UnsupportedOperationException on the wrapper"
+    (let [^Executor e (reify Executor (execute [_ r] (.run r)))
+          es (impl/->executor-service e)]
+      (is (thrown? UnsupportedOperationException (.shutdown es)))
+      (is (thrown? UnsupportedOperationException (.shutdownNow es)))
+      (is (thrown? UnsupportedOperationException (.isShutdown es)))
+      (is (thrown? UnsupportedOperationException (.isTerminated es)))
+      (is (thrown? UnsupportedOperationException
+                   (.awaitTermination es 1 TimeUnit/MILLISECONDS)))))
+  (testing "lifecycle methods on a real ExecutorService pass through unchanged"
+    (let [es (Executors/newSingleThreadExecutor)
+          wrapped (impl/->executor-service es)]
+      (is (false? (.isShutdown wrapped)))
+      (.shutdown wrapped)
+      (is (true? (.isShutdown wrapped)))
+      (is (true? (.awaitTermination wrapped 1 TimeUnit/SECONDS)))))
+  (testing "get-pool returns an ExecutorService for built-in workloads"
+    (doseq [workload [:io :mixed :compute]]
+      (is (instance? ExecutorService (get-pool workload))
+          (str "workload " workload " should yield an ExecutorService")))))
+
+(deftest with-async-factory-test
+  (testing "binds *async-factory* inside body and restores it after"
+    (let [prior f/*async-factory*
+          marker (fn marker-factory [] ::async-marker)
+          captured (atom nil)]
+      (f/with-async-factory marker
+        (reset! captured f/*async-factory*))
+      (is (identical? marker @captured))
+      (is (= ::async-marker (@captured)))
+      (is (identical? prior f/*async-factory*))))
+  (testing "f/async-factory inside the body uses the bound factory"
+    (let [marker (fn [] ::async-marker)]
+      (f/with-async-factory marker
+        (is (= ::async-marker (f/async-factory))))))
+  (testing "thread-factory falls back to *async-factory* when *thread-factory* is unbound"
+    (let [marker (fn [] ::async-marker)]
+      (f/with-async-factory marker
+        (binding [f/*thread-factory* nil]
+          (is (= ::async-marker (f/thread-factory)))))))
+  (testing "nested with-async-factory rebinds and unwinds correctly"
+    (let [outer (fn [] ::outer)
+          inner (fn [] ::inner)]
+      (f/with-async-factory outer
+        (is (= ::outer (f/async-factory)))
+        (f/with-async-factory inner
+          (is (= ::inner (f/async-factory))))
+        (is (= ::outer (f/async-factory))))))
+  (testing "nil binding is honored and async-factory falls back to async-promise-factory default"
+    (f/with-async-factory nil
+      (binding [f/*thread-factory* nil]
+        (is (f/async? (f/async-factory))))))
+  (testing "exceptions in body still restore the prior binding"
+    (let [prior f/*async-factory*]
+      (is (thrown? ExceptionInfo
+                   (f/with-async-factory (fn [] ::oops)
+                     (throw (ex-info "boom" {})))))
+      (is (identical? prior f/*async-factory*)))))
+
+(deftest with-thread-factory-test
+  (testing "binds *thread-factory* inside body and restores it after"
+    (let [prior f/*thread-factory*
+          marker (fn marker-factory [] ::thread-marker)
+          captured (atom nil)]
+      (f/with-thread-factory marker
+        (reset! captured f/*thread-factory*))
+      (is (identical? marker @captured))
+      (is (= ::thread-marker (@captured)))
+      (is (identical? prior f/*thread-factory*))))
+  (testing "f/thread-factory inside the body uses the bound factory and takes precedence over *async-factory*"
+    (let [t-marker (fn [] ::thread-marker)
+          a-marker (fn [] ::async-marker)]
+      (f/with-async-factory a-marker
+        (f/with-thread-factory t-marker
+          (is (= ::thread-marker (f/thread-factory)))))))
+  (testing "*async-factory* is unaffected by with-thread-factory"
+    (let [prior-async f/*async-factory*]
+      (f/with-thread-factory (fn [] ::thread-marker)
+        (is (identical? prior-async f/*async-factory*)))))
+  (testing "nested with-thread-factory rebinds and unwinds correctly"
+    (let [outer (fn [] ::outer)
+          inner (fn [] ::inner)]
+      (f/with-thread-factory outer
+        (is (= ::outer (f/thread-factory)))
+        (f/with-thread-factory inner
+          (is (= ::inner (f/thread-factory))))
+        (is (= ::outer (f/thread-factory))))))
+  (testing "exceptions in body still restore the prior binding"
+    (let [prior f/*thread-factory*]
+      (is (thrown? ExceptionInfo
+                   (f/with-thread-factory (fn [] ::oops)
+                     (throw (ex-info "boom" {})))))
+      (is (identical? prior f/*thread-factory*)))))

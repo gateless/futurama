@@ -6,6 +6,8 @@
    [clojure.core.async.impl.protocols :as core-impl])
   (:import
    [java.util.concurrent
+    AbstractExecutorService
+    ExecutorService
     Executor
     Future
     FutureTask]
@@ -34,6 +36,46 @@
     "Returns true if this async operation has been cancelled.")
   (cancel! [this]
     "Attempts to cancel this async operation."))
+
+(defn ->executor-service
+  "Returns the input unchanged when it is already an ExecutorService; otherwise wraps it in
+  a proxy that forwards `execute` to the underlying Executor.
+
+  The wrapper exists because `get-pool` historically returned an ExecutorService and downstream
+  consumers (notably `core.async/thread`, which calls `.submit` on the pool) depend on that
+  contract. core.async 1.9's `executor-for` now returns a plain Executor, so without this
+  adapter those callers break.
+
+  Lifecycle methods (`shutdown`, `shutdownNow`, `isShutdown`, `isTerminated`, `awaitTermination`)
+  throw UnsupportedOperationException: this proxy does not own the underlying executor and
+  cannot honestly answer for its lifecycle. Callers that need to manage a pool's lifecycle
+  should hold onto and operate on the original Executor reference, not this wrapper."
+  ^ExecutorService [^Executor executor]
+  (if (instance? ExecutorService executor)
+    executor
+    (proxy [AbstractExecutorService] []
+      (execute [^Runnable command]
+        (.execute executor command))
+
+      (shutdown []
+        (throw (UnsupportedOperationException.
+                "shutdown not supported on a non-owning ExecutorService proxy")))
+
+      (shutdownNow []
+        (throw (UnsupportedOperationException.
+                "shutdownNow not supported on a non-owning ExecutorService proxy")))
+
+      (isShutdown []
+        (throw (UnsupportedOperationException.
+                "isShutdown not supported on a non-owning ExecutorService proxy")))
+
+      (isTerminated []
+        (throw (UnsupportedOperationException.
+                "isTerminated not supported on a non-owning ExecutorService proxy")))
+
+      (awaitTermination [_wait-timeout _wait-unit]
+        (throw (UnsupportedOperationException.
+                "awaitTermination not supported on a non-owning ExecutorService proxy"))))))
 
 (deftype JavaBiConsumer [f]
   BiConsumer

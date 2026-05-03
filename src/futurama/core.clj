@@ -47,28 +47,36 @@
   primarily during development. Invalid blocking calls will throw in
   go block threads - use Thread.setDefaultUncaughtExceptionHandler()
   to catch and handle."
-  (:require [clojure.core.async :as async]
-            [clojure.core.async.impl.dispatch :as run-impl]
-            [clojure.core.async.impl.protocols :as core-impl]
-            [clojure.core.async.impl.channels :refer [box]]
-            [clojure.core.async.impl.ioc-macros :as rt]
-            [clojure.core.reducers :as r]
-            [futurama.impl :as impl]
-            [futurama.state :as state]
-            [manifold.deferred :as d])
-  (:import [clojure.lang Var IDeref IPending IFn IAtom IRef]
-           [clojure.core.async.impl.channels ManyToManyChannel]
-           [clojure.core.async.impl.buffers PromiseBuffer]
-           [java.util.concurrent
-            CompletableFuture
-            CompletionException
-            ExecutionException
-            CancellationException
-            Executor
-            Future]
-           [java.util.concurrent.locks Lock]
-           [java.util.function BiConsumer]
-           [manifold.deferred Deferred]))
+  (:require
+   [clojure.core.async :as async]
+   [clojure.core.async.impl.channels :refer [box]]
+   [clojure.core.async.impl.dispatch :as run-impl]
+   [clojure.core.async.impl.ioc-macros :as rt]
+   [clojure.core.async.impl.protocols :as core-impl]
+   [clojure.core.reducers :as r]
+   [futurama.impl :as impl]
+   [futurama.state :as state]
+   [manifold.deferred :as d])
+  (:import
+   [clojure.core.async.impl.buffers PromiseBuffer]
+   [clojure.core.async.impl.channels ManyToManyChannel]
+   [clojure.lang
+    IAtom
+    IDeref
+    IFn
+    IPending
+    IRef
+    Var]
+   [java.util.concurrent
+    CancellationException
+    CompletableFuture
+    CompletionException
+    ExecutionException
+    Executor
+    Future]
+   [java.util.concurrent.locks Lock]
+   [java.util.function BiConsumer]
+   [manifold.deferred Deferred]))
 
 (def ^:const ASYNC_CANCELLED ::cancelled)
 
@@ -147,16 +155,23 @@
     (async-future-factory)))
 
 (def get-pool
-  "Given a workload tag, returns an Executor instance and memoizes the result.
+  "Given a workload tag, returns an ExecutorService instance and memoizes the result.
   By default, futurama will defer to a user factory (if provided via sys prop `futurama.executor-factory`)
-  or the using the same pool as core.async via `clojure.core.async.impl.dispatch/executor-for`"
+  or use the same pool as core.async via `clojure.core.async.impl.dispatch/executor-for`.
+
+  The result is always an ExecutorService — earlier versions of this library returned an
+  ExecutorService, and downstream consumers (e.g. `core.async/thread` calling `.submit`)
+  rely on that contract. core.async 1.9's `executor-for` returns a plain Executor, so when
+  necessary the value is widened via `futurama.impl/->executor-service`. See that function's
+  docstring for the lifecycle caveats of the wrapper."
   (memoize
    (fn ^Executor [workload]
      (let [sysprop-factory (when-let [esf (System/getProperty "futurama.executor-factory")]
                              (requiring-resolve (symbol esf)))
-           sp-exec (and sysprop-factory (sysprop-factory workload))]
-       (or sp-exec
-           (run-impl/executor-for workload))))))
+           ^Executor executor (if sysprop-factory
+                                (sysprop-factory workload)
+                                (run-impl/executor-for workload))]
+       (impl/->executor-service executor)))))
 
 (defmacro with-pool
   "Utility macro which binds *thread-pool* to the supplied pool and then evaluates the `body`.

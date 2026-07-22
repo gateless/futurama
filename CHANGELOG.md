@@ -1,5 +1,11 @@
 This is a history of changes to gateless/futurama
 
+# 1.4.7
+* **Membership predicates**: Centralized the scattered `satisfies?` protocol checks behind inlining predicate macros in `futurama.impl` (`async?`, `async-channel?`, `async-completable-reader?`, `async-completable-writer?`, `async-cancellable?`), and switched `futurama.core`/`futurama.impl` call sites over to them. The public `futurama.core/async?` remains a function so it can still be passed as a higher-order value.
+* **Fast path**: `!<!` and `!<!!` now short-circuit non-async values, returning them directly without a channel round-trip; the argument expression is still evaluated exactly once.
+* **Tests**: Added coverage for the `!<!`/`!<!!` non-async fast path, including the single-evaluation guarantee for both non-async and async argument expressions.
+* **Dependencies**: Updated Clojure to 1.12.5 and Caffeine to 3.2.4.
+
 # 1.4.6
 * **Pool contract**: `get-pool` once again returns an `ExecutorService` (1.4.5 had narrowed the return type to `Executor` to track core.async 1.9's `executor-for`, which broke downstream consumers that called `.submit`/`.invokeAll` on the pool). When `executor-for` returns a plain `Executor`, the result is widened via a new `futurama.impl/->executor-service` proxy that forwards `execute`; real `ExecutorService` instances pass through unwrapped. The internal `async-dispatch-task-handler` continues to accept any `Executor`.
 * **Proxy lifecycle**: The widening proxy throws `UnsupportedOperationException` from `shutdown`, `shutdownNow`, `isShutdown`, `isTerminated`, and `awaitTermination` — it does not own the underlying executor and refuses to lie about its lifecycle. Callers that need to manage a pool's lifecycle should hold a reference to the original `Executor` directly.

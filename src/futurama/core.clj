@@ -212,7 +212,7 @@
 (defn async-cancellable?
   "Determines if v can be cancelled"
   [v]
-  (satisfies? impl/AsyncCancellable v))
+  (impl/async-cancellable? v))
 
 (defn async-cancel!
   "Cancels the async item."
@@ -231,25 +231,25 @@
        (some async-cancelled? state/*items*)
        false))
   ([item]
-   (when (satisfies? impl/AsyncCancellable item)
+   (when (impl/async-cancellable? item)
      (impl/cancelled? item))))
 
 (defn async-completed?
   "Checks if the provided `AsyncCompletableReader` instance is completed?"
   [x]
   (cond
-    (satisfies? impl/AsyncCompletableReader x)
+    (impl/async-completable-reader? x)
     (impl/completed? x)
 
-    (satisfies? core-impl/Channel x)
+    (impl/async-channel? x)
     (core-impl/closed? x)
 
     :else false))
 
 (defn async?
   "returns true if v instance satisfies? core.async's `ReadPort`"
-  ^Boolean [v]
-  (satisfies? core-impl/ReadPort v))
+  [v]
+  (impl/async? v))
 
 (defmacro thread!
   "Asynchronously invokes the body inside a pooled thread and return over a write port,
@@ -367,7 +367,7 @@
                              (.unlock handler)
                              take-cb))]
       (when-let [cb (commit-handler)]
-        (if (async? val)
+        (if (impl/async? val)
           (do
             (async/take! val (impl/async-reader-handler cb))
             nil)
@@ -418,7 +418,14 @@
   - Will return the raw value if it is not a ReadPort
   - Will fully read through any async result returned"
   [v]
-  `(<! (rdr ~v)))
+  (if (symbol? v)
+    `(if (impl/async? ~v)
+       (<! (rdr ~v))
+       ~v)
+    `(let [v# ~v]
+       (if (impl/async? v#)
+         (<! (rdr v#))
+         v#))))
 
 (defmacro !<!*
   "Like !<! but works with collections of async values"
@@ -438,7 +445,14 @@
   - Will return the raw value if it is not a ReadPort
   - Will fully read through any async result returned"
   [v]
-  `(<!! (rdr ~v)))
+  (if (symbol? v)
+    `(if (impl/async? ~v)
+       (<!! (rdr ~v))
+       ~v)
+    `(let [v# ~v]
+       (if (impl/async? v#)
+         (<!! (rdr v#))
+         v#))))
 
 (defmacro async-for
   "works like a for macro, but supports core.async operations.
@@ -914,7 +928,7 @@
     (instance? CompletableFuture val)
     val
 
-    (async? val)
+    (impl/async? val)
     (let [fut (CompletableFuture.)]
       (impl/on-cancel-interrupt fut val)
       (async

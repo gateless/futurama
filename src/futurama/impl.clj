@@ -37,6 +37,31 @@
   (cancel! [this]
     "Attempts to cancel this async operation."))
 
+(defmacro async?
+  "Returns true if the given value satisfies core.async's `ReadPort`."
+  [x]
+  `(satisfies? core-impl/ReadPort ~x))
+
+(defmacro async-channel?
+  "Returns true if the given value satisfies core.async's `Channel`."
+  [x]
+  `(satisfies? core-impl/Channel ~x))
+
+(defmacro async-completable-writer?
+  "Returns true if the given value is an async operation that can be completed (i.e., satisfies AsyncCompletableWriter)."
+  [x]
+  `(satisfies? AsyncCompletableWriter ~x))
+
+(defmacro async-completable-reader?
+  "Returns true if the given value is an async operation that can be read (i.e., satisfies AsyncCompletableReader)."
+  [x]
+  `(satisfies? AsyncCompletableReader ~x))
+
+(defmacro async-cancellable?
+  "Determines if v can be cancelled"
+  [x]
+  `(satisfies? AsyncCancellable ~x))
+
 (defn ->executor-service
   "Returns the input unchanged when it is already an ExecutorService; otherwise wraps it in
   a proxy that forwards `execute` to the underlying Executor.
@@ -92,7 +117,7 @@
 
 (defn- async-reader-handler*
   [cb val]
-  (if (satisfies? core-impl/ReadPort val)
+  (if (async? val)
     (take! val (partial async-reader-handler* cb))
     (cb val)))
 
@@ -113,7 +138,7 @@
       (cond
         (completed? x)
         (let [r (get! x)]
-          (if (satisfies? core-impl/ReadPort r)
+          (if (async? r)
             (do
               (take! r (async-reader-handler cb))
               nil)
@@ -129,7 +154,7 @@
   (when (nil? val)
     (throw (IllegalArgumentException. "Can't put nil on an async thing, close it instead!")))
   (let [^Lock handler handler]
-    (if (and (satisfies? AsyncCompletableReader x)
+    (if (and (async-completable-reader? x)
              (completed? x))
       (do
         (.lock handler)

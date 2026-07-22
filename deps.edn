@@ -1,13 +1,13 @@
 {:paths ["src" "resources"]
- :deps {org.clojure/clojure {:mvn/version "1.12.4"}
+ :deps {org.clojure/clojure {:mvn/version "1.12.5"}
         org.clojure/core.async {:mvn/version "1.9.865"}
         manifold/manifold {:mvn/version "0.5.0"}
-        com.github.ben-manes.caffeine/caffeine {:mvn/version "3.2.3"}}
+        com.github.ben-manes.caffeine/caffeine {:mvn/version "3.2.4"}}
 
  ;for more examples of aliases see: https://github.com/seancorfield/dot-clojure
  :aliases
  {:clojure-1.11 {:extra-deps {org.clojure/clojure {:mvn/version "1.11.4"}}}
-  :clojure-1.12 {:extra-deps {org.clojure/clojure {:mvn/version "1.12.4"}}}
+  :clojure-1.12 {:extra-deps {org.clojure/clojure {:mvn/version "1.12.5"}}}
 
   :core.async-1.8 {:extra-deps {org.clojure/core.async {:mvn/version "1.8.741"}}}
   :core.async-1.9 {:extra-deps {org.clojure/core.async {:mvn/version "1.9.865"}}}

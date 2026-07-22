@@ -509,6 +509,35 @@
                                            (CompletableFuture/completedFuture {:foo "bar"}))
                                   p)))))))))))))))
 
+(deftest non-async-fast-path
+  ;; !<! / !<!! short-circuit non-async values, returning them directly without
+  ;; a channel round-trip. These guard that behavior, including that the
+  ;; argument expression is evaluated exactly once (macro hygiene).
+  (testing "!<!! returns nil for a nil value"
+    (is (nil? (!<!! nil))))
+  (testing "!<!! returns a raw scalar unchanged"
+    (is (= 42 (!<!! 42))))
+  (testing "!<! returns nil for a nil value"
+    (is (nil? (<!! (async (!<! nil))))))
+  (testing "!<! returns a raw scalar unchanged"
+    (is (= 42 (<!! (async (!<! 42))))))
+  (testing "!<!! evaluates a non-async argument expression exactly once"
+    (let [calls (atom 0)]
+      (is (= 1 (!<!! (swap! calls inc))))
+      (is (= 1 @calls))))
+  (testing "!<! evaluates a non-async argument expression exactly once"
+    (let [calls (atom 0)]
+      (is (= 1 (<!! (async (!<! (swap! calls inc))))))
+      (is (= 1 @calls))))
+  (testing "!<!! evaluates an async argument expression exactly once"
+    (let [calls (atom 0)]
+      (is (= 1 (!<!! (async (swap! calls inc)))))
+      (is (= 1 @calls))))
+  (testing "!<! evaluates an async argument expression exactly once"
+    (let [calls (atom 0)]
+      (is (= 1 (<!! (async (!<! (async (swap! calls inc)))))))
+      (is (= 1 @calls)))))
+
 (deftest error-handling
   (testing "throws async exception on blocking take from thread - !<!!"
     (is (thrown-with-msg?

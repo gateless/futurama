@@ -49,7 +49,6 @@
   to catch and handle."
   (:require
    [clojure.core.async :as async]
-   [clojure.core.async.impl.channels :refer [box]]
    [clojure.core.async.impl.dispatch :as run-impl]
    [clojure.core.async.impl.ioc-macros :as rt]
    [clojure.core.async.impl.protocols :as core-impl]
@@ -74,7 +73,6 @@
     ExecutionException
     Executor
     Future]
-   [java.util.concurrent.locks Lock]
    [java.util.function BiConsumer]
    [manifold.deferred Deferred]))
 
@@ -324,7 +322,7 @@
                             `(try
                                ~@body
                                (catch Throwable ~'e
-                                 (unwrap-exception ~'e))) 1 [crossing-env &env] rt/async-custom-terminators)
+                                 (unwrap-exception ~'e))) 1 [crossing-env &env] impl/async-custom-terminators)
                        state# (-> (f#)
                                   (rt/aset-all! rt/USER-START-IDX port#
                                                 rt/BINDINGS-IDX captured-bindings#))]
@@ -360,21 +358,10 @@
 (deftype AsyncReader [val]
   core-impl/ReadPort
   (take! [_ handler]
-    (let [^Lock handler handler
-          commit-handler (fn do-commit []
-                           (.lock handler)
-                           (let [take-cb (and (core-impl/active? handler) (core-impl/commit handler))]
-                             (.unlock handler)
-                             take-cb))]
-      (when-let [cb (commit-handler)]
-        (if (impl/async? val)
-          (do
-            (async/take! val (impl/async-reader-handler cb))
-            nil)
-          (box val))))))
+    (impl/async-read-port-take! val handler)))
 
 (defn ->async-reader
-  "Creates an AsyncReader to read anything via `take!`"
+  "Creates an AsyncReader to recursively read via `take!` and `poll!` until a value is returned."
   [x]
   (AsyncReader. x))
 

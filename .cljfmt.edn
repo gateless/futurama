@@ -5,4 +5,5 @@
            futurama.core/thread [[:inner 0]]
            futurama.core/async! [[:inner 0]]
            futurama.core/thread! [[:inner 0]]
-           futurama.impl/async-dispatch-task-handler [[:inner 0]]}}
+           futurama.impl/async-dispatch-task-handler [[:inner 0]]
+           futurama.state/push-item [[:inner 0]]}}

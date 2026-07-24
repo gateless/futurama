@@ -1,10 +1,13 @@
 (ns ^:no-doc futurama.impl
   (:require
-   [clojure.core.async :refer [take!]]
+   [clojure.core.async :refer [take!] :as async]
    [clojure.core.async.impl.go :as go-impl]
    [clojure.core.async.impl.channels :refer [box]]
-   [clojure.core.async.impl.protocols :as core-impl])
+   [clojure.core.async.impl.protocols :as core-impl]
+   [clojure.core.async.impl.ioc-macros :as rt])
   (:import
+   [clojure.lang
+    Var]
    [java.util.concurrent
     AbstractExecutorService
     ExecutorService
@@ -126,6 +129,16 @@
   (partial async-reader-handler* cb))
 
 (defn async-read-port-take!
+  "Shared `ReadPort/take!` implementation, supports three types of async values:
+  - an `AsyncCompletableReader` (futurama's completable types): use the
+    `completed?`/`get!` synchronous fast-path, otherwise register via `on-complete`.
+  - a plain core.async `ReadPort` (e.g. a core.async channel): use `poll!` as the synchronous
+    fast-path, otherwise register via `take!`.
+  - anything else: box the value directly.
+
+  Commits the handler up front so every branch follows the `ReadPort` contract. Without this,
+  reading a plain value inside `alts!` could leave a pending take on the other ports that
+  later reads and drops a value."
   [x handler]
   (let [^Lock handler handler
         commit-handler (fn do-commit []
@@ -136,18 +149,23 @@
                            take-cb))]
     (when-let [cb (commit-handler)]
       (cond
-        (completed? x)
-        (let [r (get! x)]
-          (if (async? r)
-            (do
-              (take! r (async-reader-handler cb))
-              nil)
-            (box r)))
+        (async-completable-reader? x)
+        (if (completed? x)
+          (let [r (get! x)]
+            (if (async? r)
+              (do (take! r (async-reader-handler cb)) nil)
+              (box r)))
+          (do (on-complete x (async-reader-handler cb)) nil))
+
+        (async? x)
+        (if-some [v (async/poll! x)]
+          (if (async? v)
+            (do (take! v (async-reader-handler cb)) nil)
+            (box v))
+          (do (take! x (async-reader-handler cb)) nil))
 
         :else
-        (do
-          (on-complete x cb)
-          nil)))))
+        (box x)))))
 
 (defn async-write-port-put!
   [x val handler]
@@ -169,3 +187,31 @@
         (.unlock handler)
         (box
          (complete! x val))))))
+
+;;; Custom parking terminators to snapshot the thread binding frame before registering the callback,
+;;; so that a resume on another thread sees the correct frame.
+
+(defn ioc-take!
+  "Calls core.async's ioc-take!, but snapshots the thread binding frame before registering the callback."
+  [state blk c]
+  (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
+  (rt/take! state blk c))
+
+(defn ioc-put!
+  "Calls core.async's ioc-put!, but snapshots the thread binding frame before registering the callback."
+  [state blk c val]
+  (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
+  (rt/put! state blk c val))
+
+(defn ioc-alts!
+  "Calls core.async's ioc-alts!, but snapshots the thread binding frame before registering the callback."
+  [state cont-block ports & opts]
+  (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
+  (apply async/ioc-alts! state cont-block ports opts))
+
+(def async-custom-terminators
+  "Custom parking terminators to snapshot the thread binding frame before registering the callback."
+  (assoc rt/async-custom-terminators
+         `async/<! `ioc-take!
+         `async/>! `ioc-put!
+         `async/alts! `ioc-alts!))

@@ -324,7 +324,7 @@
                             `(try
                                ~@body
                                (catch Throwable ~'e
-                                 (unwrap-exception ~'e))) 1 [crossing-env &env] rt/async-custom-terminators)
+                                 (unwrap-exception ~'e))) 1 [crossing-env &env] impl/async-custom-terminators)
                        state# (-> (f#)
                                   (rt/aset-all! rt/USER-START-IDX port#
                                                 rt/BINDINGS-IDX captured-bindings#))]
@@ -366,12 +366,27 @@
                            (let [take-cb (and (core-impl/active? handler) (core-impl/commit handler))]
                              (.unlock handler)
                              take-cb))]
-      (when-let [cb (commit-handler)]
-        (if (impl/async? val)
-          (do
-            (async/take! val (impl/async-reader-handler cb))
-            nil)
-          (box val))))))
+      ;;; Recursively unwrap any nested async values, until a non-async value is returned.
+      (cond
+        (impl/async-completable-reader? val)
+        (when-let [cb (commit-handler)]
+          (if (impl/completed? val)
+            (let [r (impl/get! val)]
+              (if (impl/async? r)
+                (do (async/take! r (impl/async-reader-handler cb)) nil)
+                (box r)))
+            (do (impl/on-complete val (impl/async-reader-handler cb)) nil)))
+
+        (impl/async? val)
+        (when-let [cb (commit-handler)]
+          (if-some [v (async/poll! val)]
+            (if (impl/async? v)
+              (do (async/take! v (impl/async-reader-handler cb)) nil)
+              (box v))
+            (do (async/take! val (impl/async-reader-handler cb)) nil)))
+
+        :else
+        (box val)))))
 
 (defn ->async-reader
   "Creates an AsyncReader to read anything via `take!`"
@@ -914,7 +929,7 @@
                (instance? PromiseBuffer))
       (async/take! c (fn [_]
                        (when (impl/cancelled? c)
-                         (impl/cancel! fut)))))
+                         (impl/cancel! fut))) false))
     c)
   (cancelled? [c]
     (get-cancel-state c)))

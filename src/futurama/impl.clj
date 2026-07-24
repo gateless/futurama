@@ -1,10 +1,13 @@
 (ns ^:no-doc futurama.impl
   (:require
-   [clojure.core.async :refer [take!]]
+   [clojure.core.async :refer [take!] :as async]
    [clojure.core.async.impl.go :as go-impl]
    [clojure.core.async.impl.channels :refer [box]]
-   [clojure.core.async.impl.protocols :as core-impl])
+   [clojure.core.async.impl.protocols :as core-impl]
+   [clojure.core.async.impl.ioc-macros :as rt])
   (:import
+   [clojure.lang
+    Var]
    [java.util.concurrent
     AbstractExecutorService
     ExecutorService
@@ -169,3 +172,31 @@
         (.unlock handler)
         (box
          (complete! x val))))))
+
+;;; Custom parking terminators to snapshot the thread binding frame before registering the callback,
+;;; so that a resume on another thread sees the correct frame.
+
+(defn ioc-take!
+  "Calls core.async's ioc-take!, but snapshots the thread binding frame before registering the callback."
+  [state blk c]
+  (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
+  (rt/take! state blk c))
+
+(defn ioc-put!
+  "Calls core.async's ioc-put!, but snapshots the thread binding frame before registering the callback."
+  [state blk c val]
+  (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
+  (rt/put! state blk c val))
+
+(defn ioc-alts!
+  "Calls core.async's ioc-alts!, but snapshots the thread binding frame before registering the callback."
+  [state cont-block ports & opts]
+  (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
+  (apply async/ioc-alts! state cont-block ports opts))
+
+(def async-custom-terminators
+  "Custom parking terminators to snapshot the thread binding frame before registering the callback."
+  (assoc rt/async-custom-terminators
+         `async/<! `ioc-take!
+         `async/>! `ioc-put!
+         `async/alts! `ioc-alts!))

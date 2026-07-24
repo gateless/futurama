@@ -36,6 +36,8 @@
 (def ^:dynamic *test-val1* nil)
 (def test-val2 nil)
 
+(def ^:dynamic *bind-probe* nil)
+
 (defmacro wrap-async
   [f & args]
   `(fn ~(symbol (str "async" (name f)))
@@ -508,6 +510,44 @@
                                   (deliver p
                                            (CompletableFuture/completedFuture {:foo "bar"}))
                                   p)))))))))))))))
+
+(defn- probe-binding
+  "Run a binding probe n times, returning a frequency map of the results. The probe is a function that
+  returns the value of the dynamic var *bind-probe* after an async operation. If the binding is lost,
+  the probe will throw an exception, which is caught and recorded as :threw."
+  [n take-cb]
+  (frequencies
+   (repeatedly n
+               (fn []
+                 (try (take-cb) (catch Throwable _ :threw))))))
+
+(deftest binding-bound-outside-async-survives-park
+  (testing "binding set outside async is never lost across an !<! park with 0 loss"
+    (let [n 2000
+          freqs (probe-binding n (fn []
+                                   (binding [*bind-probe* :bound]
+                                     (!<!! (async
+                                             (!<! (async :ignore))
+                                             *bind-probe*)))))]
+      (is (= {:bound n} freqs)
+          (str "binding lost with bind-outside: " freqs)))))
+
+(deftest binding-bound-inside-async-survives-park
+  (testing "binding set inside async survives an !<! park (window widened for determinism) with 0 loss"
+    (let [orig @#'impl/ioc-take!
+          n 500]
+      (with-redefs [impl/ioc-take! (fn [state blk c]
+                                     (let [r (orig state blk c)]
+                                       (when (nil? r)
+                                         (java.util.concurrent.locks.LockSupport/parkNanos 200000))
+                                       r))]
+        (let [freqs (probe-binding n (fn []
+                                       (!<!! (async
+                                               (binding [*bind-probe* :bound]
+                                                 (!<! (async :ignore))
+                                                 *bind-probe*)))))]
+          (is (= {:bound n} freqs)
+              (str "binding lost across park: " freqs)))))))
 
 (deftest non-async-fast-path
   ;; !<! / !<!! short-circuit non-async values, returning them directly without

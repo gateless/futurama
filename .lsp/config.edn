@@ -1,6 +1,1 @@
-{:cljfmt {:indents {async! [[:inner 0]]
-                    async [[:inner 0]]
-                    thread! [[:inner 0]]
-                    thread [[:inner 0]]
-                    push-item [[:inner 0]]
-                    cond [[:inner 0]]}}}
+{}

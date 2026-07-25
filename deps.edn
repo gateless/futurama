@@ -39,10 +39,10 @@
                      "-m" "nrepl.cmdline" "--interactive"
                      "--middleware" "[\"cider.nrepl/cider-middleware\"]"]}
 
-  :format-fix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
+  :format-fix {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.16.5"}}
                :main-opts ["-m" "cljfmt.main" "fix" "src" "dev"]}
 
-  :format-check {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
+  :format-check {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.16.5"}}
                  :main-opts ["-m" "cljfmt.main" "check" "src" "dev"]}
 
   :jar {:replace-deps {com.github.seancorfield/depstar {:mvn/version "2.1.303"}}

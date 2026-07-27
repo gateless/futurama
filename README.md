@@ -296,12 +296,12 @@ Add Futurama to your project dependencies:
 
 **deps.edn**
 ```clojure
-{:deps {com.github.gateless/futurama {:mvn/version "1.4.0"}}}
+{:deps {com.github.gateless/futurama {:mvn/version "1.4.8"}}}
 ```
 
 **Leiningen project.clj**
 ```clojure
-[com.github.gateless/futurama "1.4.0"]
+[com.github.gateless/futurama "1.4.8"]
 ```
 
 ## Requirements

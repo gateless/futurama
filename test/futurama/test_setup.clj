@@ -1,11 +1,8 @@
 (ns futurama.test-setup
   "Things we need to do in order to run tests with a smile"
-  (:require [kaocha.hierarchy :as hierarchy]
-            [pjstadig.humane-test-output :as hto]))
+  (:require [kaocha.hierarchy :as hierarchy]))
 
 (hierarchy/derive! ::ignore :kaocha/known-key)
-
-(hto/activate!)
 
 #_{:clojure-lsp/ignore [:clojure-lsp/unused-public-var]}
 (defn defuse-zero-assertions

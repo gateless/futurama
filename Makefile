@@ -34,6 +34,14 @@ lint:
 	clojure -M:dev:test:app:clj-kondo --copy-configs --dependencies --parallel --lint "$(shell clojure -A:dev:test -Spath)"
 	clojure -M:dev:test:app:clj-kondo --lint "src:test" --fail-level "error"
 
+deps-check:
+	## we exclude core.async because it is tested with multiple versions
+	clojure -M:dev:test:deps-antq --exclude=org.clojure/core.async
+
+deps-upgrade:
+	## we exclude core.async because it is manually upgraded in the deps.edn file to test multiple versions
+	clojure -M:dev:test:deps-antq --exclude=org.clojure/core.async --upgrade
+
 build:
 	clojure -X:jar :sync-pom true :jar "build/futurama.jar"
 

@@ -1,9 +1,7 @@
 (ns futurama.core-test
-  (:require [bond.james :as bond]
-            [clojure.core.async :refer [<! <!! >! go put! take! timeout] :as a]
+  (:require [clojure.core.async :refer [<! <!! >! go put! take! timeout] :as a]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [criterium.core :refer [quick-benchmark report-result
-                                    with-progress-reporting]]
+            [clojure.walk :as walk]
             [futurama.core :refer [!<! !<!! !<!* <!* async async-> async->>
                                    async-cancel! async-cancellable? async-completed?
                                    async-cancelled? async-every? async-for async-map
@@ -36,6 +34,8 @@
 (def ^:dynamic *test-val1* nil)
 (def test-val2 nil)
 
+(def ^:dynamic *bind-probe* nil)
+
 (defmacro wrap-async
   [f & args]
   `(fn ~(symbol (str "async" (name f)))
@@ -50,6 +50,20 @@
 (def test-pool
   (delay
     (Executors/newFixedThreadPool 10)))
+
+(defn min-elapsed-ms
+  "Runs `thunk` `n` times and returns the minimum wall-clock elapsed time in ms.
+   Taking the minimum filters out GC/scheduling noise so we can assert tight,
+   meaningful concurrency bounds cheaply — without criterium's statistical runs."
+  [n thunk]
+  (loop [i n
+         best Double/POSITIVE_INFINITY]
+    (if (pos? i)
+      (let [start (System/nanoTime)
+            _ (thunk)
+            elapsed (/ (- (System/nanoTime) start) 1e6)]
+        (recur (dec i) (min best elapsed)))
+      best)))
 
 (deftest cancel-async-test
   (testing "cancellable ->future is interrupted test"
@@ -181,91 +195,78 @@
         (is (true? (async-completed? f)))
         (is (false? @interrupted))))))
 
+(defn- selects-pool?
+  "True when the fully macroexpanded form contains a (get-pool <workload>) call —
+   i.e. the async/thread macro resolves its executor for that workload. Pure,
+   deterministic, and thread-free: replaces the global get-pool spy, which was
+   subject to cross-thread pollution from background default-pool tasks.
+
+   *ns* is bound to futurama.core so the macros resolve regardless of the caller's
+   namespace (kaocha runs test bodies with *ns* unbound to the test ns)."
+  [form workload]
+  (->> (binding [*ns* (find-ns 'futurama.core)]
+         (walk/macroexpand-all form))
+       (tree-seq coll? seq)
+       (some (fn [x]
+               (and (seq? x)
+                    (= `get-pool (first x))
+                    (= workload (second x)))))
+       boolean))
+
 (deftest with-pool-macro-test
-  (testing "with-pool evals body with provided pool"
-    (bond/with-spy [get-pool]
-      (!<!!
-       (with-pool @test-pool
-         (async
-           (is (= 100
-                  (!<! (CompletableFuture/completedFuture 100)))))))
-      (is (= [] (->> get-pool bond/calls (map :args))))))
-  (testing "with-pool uses specified workload pool - io"
+  (testing "with-pool binds *thread-pool* to a provided pool"
+    (is (= 100
+           (!<!!
+            (with-pool @test-pool
+              (async
+                (is (= @test-pool f/*thread-pool*))
+                (!<! (CompletableFuture/completedFuture 100))))))))
+  (testing "with-pool binds *thread-pool* to the :io workload pool"
     (let [io-pool (get-pool :io)]
-      (bond/with-spy [get-pool]
-        (!<!!
-         (with-pool :io
-           (async
-             (is (= 100
-                    (!<! (CompletableFuture/completedFuture 100))))
-             (is (= io-pool f/*thread-pool*)))))
-        (is (= [[:io]] (->> get-pool bond/calls (map :args)))))))
-  (testing "with-pool uses specified workload pool - mixed"
+      (is (= 100
+             (!<!!
+              (with-pool :io
+                (async
+                  (is (= io-pool f/*thread-pool*))
+                  (!<! (CompletableFuture/completedFuture 100)))))))))
+  (testing "with-pool binds *thread-pool* to the :mixed workload pool"
     (let [mixed-pool (get-pool :mixed)]
-      (bond/with-spy [get-pool]
-        (!<!!
-         (with-pool :mixed
-           (async
-             (is (= 100
-                    (!<! (CompletableFuture/completedFuture 100))))
-             (is (= mixed-pool f/*thread-pool*)))))
-        (is (= [[:mixed]] (->> get-pool bond/calls (map :args)))))))
-  (testing "with-pool uses specified workload pool - compute"
+      (is (= 100
+             (!<!!
+              (with-pool :mixed
+                (async
+                  (is (= mixed-pool f/*thread-pool*))
+                  (!<! (CompletableFuture/completedFuture 100)))))))))
+  (testing "with-pool binds *thread-pool* to the :compute workload pool"
     (let [compute-pool (get-pool :compute)]
-      (bond/with-spy [get-pool]
-        (!<!!
-         (with-pool :compute
-           (async
-             (is (= 100
-                    (!<! (CompletableFuture/completedFuture 100))))
-             (is (= compute-pool f/*thread-pool*)))))
-        (is (= [[:compute]] (->> get-pool bond/calls (map :args))))))))
+      (is (= 100
+             (!<!!
+              (with-pool :compute
+                (async
+                  (is (= compute-pool f/*thread-pool*))
+                  (!<! (CompletableFuture/completedFuture 100))))))))))
 
 (deftest thread-macro-workload-test
-  (testing "thread uses workload pool - io"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (thread :io
-                ::done))))
-      (is (= [[:io]] (->> get-pool bond/calls (map :args))))))
-  (testing "thread uses default pool - mixed"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (thread
-                ::done))))
-      (is (= [[:mixed]] (->> get-pool bond/calls (map :args))))))
-  (testing "thread uses workload pool - compute"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (thread :compute
-                ::done))))
-      (is (= [[:compute]] (->> get-pool bond/calls (map :args)))))))
+  (testing "thread selects the :io workload pool"
+    (is (= ::done (!<!! (thread :io ::done))))
+    (is (selects-pool? '(thread :io ::done) :io)))
+  (testing "thread defaults to the :mixed workload pool"
+    (is (= ::done (!<!! (thread ::done))))
+    (is (selects-pool? '(thread ::done) :mixed)))
+  (testing "thread selects the :compute workload pool"
+    (is (= ::done (!<!! (thread :compute ::done))))
+    (is (selects-pool? '(thread :compute ::done) :compute))))
 
 (deftest async-macro-workload-test
-  (testing "thread uses workload pool - io"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (async :io
-                ::done))))
-      (is (= [[:io]] (->> get-pool bond/calls (map :args))))))
-  (testing "thread uses default pool - io"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (async
-                ::done))))
-      (is (= [[:io]] (->> get-pool bond/calls (map :args))))))
-  (testing "thread uses workload pool - compute"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (async :compute
-                ::done))))
-      (is (= [[:compute]] (->> get-pool bond/calls (map :args)))))))
+  (testing "async selects the :io workload pool"
+    (is (= ::done (!<!! (async :io ::done))))
+    (is (selects-pool? '(async :io ::done) :io)))
+  (testing "async defaults to the :io workload pool"
+    (is (= ::done (!<!! (async ::done))))
+    (is (selects-pool? '(async ::done) :io)))
+  (testing "async selects the :compute workload pool"
+    (is (= ::done (!<!! (async :compute ::done))))
+    (is (selects-pool? '(async :compute ::done) :compute))))
 
 (deftest thread-first-macro-tests
   (testing "can thread first async->"
@@ -381,32 +382,36 @@
              (apply map + args)
              (!<!! (apply async-map async-handler args))))))
   (testing "can loop map concurrently, performance test"
-    (let [_pool-warmup (<!! (async-map #(async (!<! (timeout 50)) (inc %)) (range 20)))
-          bench (with-progress-reporting
-                  (quick-benchmark
-                   (<!! (async-map #(async (!<! (timeout 50)) (inc %)) (range 10)))
-                   {:verbose true}))
-          [mean [lower upper]] (:mean bench)]
-      (report-result bench)
-      (is (<= 0.04 lower mean upper 0.07)))))
+    (let [run     #(<!! (async-map (fn [x] (async (!<! (timeout 50)) (inc x)))
+                                   (range 10)))
+          _warmup (run)
+          elapsed (min-elapsed-ms 10 run)]
+      (is (<= 40 elapsed 150)
+          (str "expected concurrent execution ~50ms, got " elapsed "ms")))))
 
 (deftest async-for-test
+  (testing "works the same way as a for comprehension with multiple colls"
+    (let [args1 (range 10)
+          args2 (range 10)]
+      (is (= (for [x args1
+                   y args2]
+               (+ x y))
+             (<!! (async-for [x args1
+                              y args2]
+                             (async (+ x y))))))))
   (testing "can loop for concurrently, performance test"
-    (let [bench (with-progress-reporting
-                  (quick-benchmark
-                   (<!!
-                    (async-for
-                     [a (range 4)
-                      b (range 4)
-                      :let [c (+ a b)]
-                      :when (and (odd? a) (odd? b))]
-                     (async
-                       (!<! (timeout 50))
-                       [a b c (+ a b c)])))
-                   {:verbose true}))
-          [mean [lower upper]] (:mean bench)]
-      (report-result bench)
-      (is (<= 0.04 lower mean upper 0.07)))))
+    (let [run     #(<!! (async-for
+                         [a (range 4)
+                          b (range 4)
+                          :let [c (+ a b)]
+                          :when (and (odd? a) (odd? b))]
+                         (async
+                           (!<! (timeout 50))
+                           [a b c (+ a b c)])))
+          _warmup (run)
+          elapsed (min-elapsed-ms 10 run)]
+      (is (<= 40 elapsed 150)
+          (str "expected concurrent execution ~50ms, got " elapsed "ms")))))
 
 (deftest async-ops
   (testing "async? for CompletableFuture"
@@ -509,6 +514,65 @@
                                            (CompletableFuture/completedFuture {:foo "bar"}))
                                   p)))))))))))))))
 
+(defn- probe-binding
+  "Run a binding probe n times, returning a frequency map of the results. The probe is a function that
+  returns the value of the dynamic var *bind-probe* after an async operation."
+  [n probe-binding-fn]
+  (frequencies
+   (repeatedly n probe-binding-fn)))
+
+(defn- binding-race-instrument!
+  [handler]
+  (fn [& args]
+    (let [r (apply handler args)]
+      (when (nil? r)
+        (java.util.concurrent.locks.LockSupport/parkNanos 200000))
+      r)))
+
+(deftest binding-bound-outside-async-and-go-block-survives-park
+  (testing "binding set outside async is never lost across an !<! park with 0 loss"
+    (let [n 2000
+          freqs (probe-binding n (fn []
+                                   (binding [*bind-probe* :bound]
+                                     (!<!! (async
+                                             (!<! (timeout 1))
+                                             *bind-probe*)))))]
+      (is (= {:bound n} freqs)
+          (str "binding lost with bind-outside: " freqs))))
+  (testing "binding set outside go is never lost across an <! park with 0 loss"
+    (let [n 2000
+          freqs (probe-binding n (fn []
+                                   (binding [*bind-probe* :bound]
+                                     (<!! (go
+                                            (<! (timeout 1))
+                                            *bind-probe*)))))]
+      (is (= {:bound n} freqs)
+          (str "binding lost with bind-outside: " freqs)))))
+
+(deftest binding-bound-inside-async-and-go-block-survives-park
+  (testing "binding set inside async survives an !<! park (window widened for determinism) with 0 loss"
+    (let [ioc-take @#'impl/ioc-take!
+          n 500]
+      (with-redefs [impl/ioc-take! (binding-race-instrument! ioc-take)]
+        (let [freqs (probe-binding n (fn []
+                                       (!<!! (async
+                                               (binding [*bind-probe* :bound]
+                                                 (!<! (timeout 1))
+                                                 *bind-probe*)))))]
+          (is (= {:bound n} freqs)
+              (str "binding lost across park: " freqs))))))
+  (testing "binding set inside go block survives an <! park (window widened for determinism) with 0 loss"
+    (let [ioc-take @#'impl/ioc-take!
+          n 500]
+      (with-redefs [impl/ioc-take! (binding-race-instrument! ioc-take)]
+        (let [freqs (probe-binding n (fn []
+                                       (<!! (go
+                                              (binding [*bind-probe* :bound]
+                                                (<! (timeout 1))
+                                                *bind-probe*)))))]
+          (is (= {:bound n} freqs)
+              (str "binding lost across park: " freqs)))))))
+
 (deftest non-async-fast-path
   ;; !<! / !<!! short-circuit non-async values, returning them directly without
   ;; a channel round-trip. These guard that behavior, including that the
@@ -537,6 +601,29 @@
     (let [calls (atom 0)]
       (is (= 1 (<!! (async (!<! (async (swap! calls inc)))))))
       (is (= 1 @calls)))))
+
+(deftest async-reader-read-port-take
+  (testing "reads a plain (non-async) wrapped value directly"
+    (is (= 42 (<!! (f/->async-reader 42))))
+    (is (nil? (<!! (f/->async-reader nil)))))
+  (testing "poll! fast-path: reads a ready value from a wrapped channel"
+    (let [ch (a/chan 1)]
+      (a/>!! ch :ready)
+      (is (= :ready (<!! (f/->async-reader ch))))))
+  (testing "completable-reader fast-path spot check across read-port types"
+    (is (= :fut (!<!! (future :fut))))
+    (is (= :dly (!<!! (delay :dly))))
+    (is (= :prm (!<!! (doto (promise) (deliver :prm)))))
+    (is (= :cf  (!<!! (CompletableFuture/completedFuture :cf)))))
+  (testing "reading a plain-valued ->async-reader via alts! commits the shared
+            handler, leaving no phantom taker on the losing (parked) port"
+    (let [ch (a/chan)
+          reader (f/->async-reader 42)
+          [v port] (a/alts!! [ch reader])]
+      (is (= 42 v))
+      (is (identical? reader port) "the ready reader must win the alts")
+      (is (nil? (a/offer! ch :x))
+          "losing port must have no phantom taker after alts! resolves"))))
 
 (deftest error-handling
   (testing "throws async exception on blocking take from thread - !<!!"

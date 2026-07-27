@@ -1,7 +1,7 @@
 (ns futurama.core-test
-  (:require [bond.james :as bond]
-            [clojure.core.async :refer [<! <!! >! go put! take! timeout] :as a]
+  (:require [clojure.core.async :refer [<! <!! >! go put! take! timeout] :as a]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.walk :as walk]
             [futurama.core :refer [!<! !<!! !<!* <!* async async-> async->>
                                    async-cancel! async-cancellable? async-completed?
                                    async-cancelled? async-every? async-for async-map
@@ -56,12 +56,14 @@
    Taking the minimum filters out GC/scheduling noise so we can assert tight,
    meaningful concurrency bounds cheaply — without criterium's statistical runs."
   [n thunk]
-  (reduce
-   min
-   (for [_ (range n)]
-     (let [start (System/nanoTime)]
-       (thunk)
-       (/ (- (System/nanoTime) start) 1e6)))))
+  (loop [i n
+         best Double/POSITIVE_INFINITY]
+    (if (pos? i)
+      (let [start (System/nanoTime)
+            _ (thunk)
+            elapsed (/ (- (System/nanoTime) start) 1e6)]
+        (recur (dec i) (min best elapsed)))
+      best)))
 
 (deftest cancel-async-test
   (testing "cancellable ->future is interrupted test"
@@ -193,91 +195,78 @@
         (is (true? (async-completed? f)))
         (is (false? @interrupted))))))
 
+(defn- selects-pool?
+  "True when the fully macroexpanded form contains a (get-pool <workload>) call —
+   i.e. the async/thread macro resolves its executor for that workload. Pure,
+   deterministic, and thread-free: replaces the global get-pool spy, which was
+   subject to cross-thread pollution from background default-pool tasks.
+
+   *ns* is bound to futurama.core so the macros resolve regardless of the caller's
+   namespace (kaocha runs test bodies with *ns* unbound to the test ns)."
+  [form workload]
+  (->> (binding [*ns* (find-ns 'futurama.core)]
+         (walk/macroexpand-all form))
+       (tree-seq coll? seq)
+       (some (fn [x]
+               (and (seq? x)
+                    (= `get-pool (first x))
+                    (= workload (second x)))))
+       boolean))
+
 (deftest with-pool-macro-test
-  (testing "with-pool evals body with provided pool"
-    (bond/with-spy [get-pool]
-      (!<!!
-       (with-pool @test-pool
-         (async
-           (is (= 100
-                  (!<! (CompletableFuture/completedFuture 100)))))))
-      (is (= [] (->> get-pool bond/calls (map :args))))))
-  (testing "with-pool uses specified workload pool - io"
+  (testing "with-pool binds *thread-pool* to a provided pool"
+    (is (= 100
+           (!<!!
+            (with-pool @test-pool
+              (async
+                (is (= @test-pool f/*thread-pool*))
+                (!<! (CompletableFuture/completedFuture 100))))))))
+  (testing "with-pool binds *thread-pool* to the :io workload pool"
     (let [io-pool (get-pool :io)]
-      (bond/with-spy [get-pool]
-        (!<!!
-         (with-pool :io
-           (async
-             (is (= 100
-                    (!<! (CompletableFuture/completedFuture 100))))
-             (is (= io-pool f/*thread-pool*)))))
-        (is (= [[:io]] (->> get-pool bond/calls (map :args)))))))
-  (testing "with-pool uses specified workload pool - mixed"
+      (is (= 100
+             (!<!!
+              (with-pool :io
+                (async
+                  (is (= io-pool f/*thread-pool*))
+                  (!<! (CompletableFuture/completedFuture 100)))))))))
+  (testing "with-pool binds *thread-pool* to the :mixed workload pool"
     (let [mixed-pool (get-pool :mixed)]
-      (bond/with-spy [get-pool]
-        (!<!!
-         (with-pool :mixed
-           (async
-             (is (= 100
-                    (!<! (CompletableFuture/completedFuture 100))))
-             (is (= mixed-pool f/*thread-pool*)))))
-        (is (= [[:mixed]] (->> get-pool bond/calls (map :args)))))))
-  (testing "with-pool uses specified workload pool - compute"
+      (is (= 100
+             (!<!!
+              (with-pool :mixed
+                (async
+                  (is (= mixed-pool f/*thread-pool*))
+                  (!<! (CompletableFuture/completedFuture 100)))))))))
+  (testing "with-pool binds *thread-pool* to the :compute workload pool"
     (let [compute-pool (get-pool :compute)]
-      (bond/with-spy [get-pool]
-        (!<!!
-         (with-pool :compute
-           (async
-             (is (= 100
-                    (!<! (CompletableFuture/completedFuture 100))))
-             (is (= compute-pool f/*thread-pool*)))))
-        (is (= [[:compute]] (->> get-pool bond/calls (map :args))))))))
+      (is (= 100
+             (!<!!
+              (with-pool :compute
+                (async
+                  (is (= compute-pool f/*thread-pool*))
+                  (!<! (CompletableFuture/completedFuture 100))))))))))
 
 (deftest thread-macro-workload-test
-  (testing "thread uses workload pool - io"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (thread :io
-                ::done))))
-      (is (= [[:io]] (->> get-pool bond/calls (map :args))))))
-  (testing "thread uses default pool - mixed"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (thread
-                ::done))))
-      (is (= [[:mixed]] (->> get-pool bond/calls (map :args))))))
-  (testing "thread uses workload pool - compute"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (thread :compute
-                ::done))))
-      (is (= [[:compute]] (->> get-pool bond/calls (map :args)))))))
+  (testing "thread selects the :io workload pool"
+    (is (= ::done (!<!! (thread :io ::done))))
+    (is (selects-pool? '(thread :io ::done) :io)))
+  (testing "thread defaults to the :mixed workload pool"
+    (is (= ::done (!<!! (thread ::done))))
+    (is (selects-pool? '(thread ::done) :mixed)))
+  (testing "thread selects the :compute workload pool"
+    (is (= ::done (!<!! (thread :compute ::done))))
+    (is (selects-pool? '(thread :compute ::done) :compute))))
 
 (deftest async-macro-workload-test
-  (testing "thread uses workload pool - io"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (async :io
-                ::done))))
-      (is (= [[:io]] (->> get-pool bond/calls (map :args))))))
-  (testing "thread uses default pool - io"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (async
-                ::done))))
-      (is (= [[:io]] (->> get-pool bond/calls (map :args))))))
-  (testing "thread uses workload pool - compute"
-    (bond/with-spy [get-pool]
-      (is (= ::done
-             (!<!!
-              (async :compute
-                ::done))))
-      (is (= [[:compute]] (->> get-pool bond/calls (map :args)))))))
+  (testing "async selects the :io workload pool"
+    (is (= ::done (!<!! (async :io ::done))))
+    (is (selects-pool? '(async :io ::done) :io)))
+  (testing "async defaults to the :io workload pool"
+    (is (= ::done (!<!! (async ::done))))
+    (is (selects-pool? '(async ::done) :io)))
+  (testing "async selects the :compute workload pool"
+    (is (= ::done (!<!! (async :compute ::done))))
+    (is (selects-pool? '(async :compute ::done) :compute))))
 
 (deftest thread-first-macro-tests
   (testing "can thread first async->"
@@ -527,13 +516,10 @@
 
 (defn- probe-binding
   "Run a binding probe n times, returning a frequency map of the results. The probe is a function that
-  returns the value of the dynamic var *bind-probe* after an async operation. If the binding is lost,
-  the probe will throw an exception, which is caught and recorded as :threw."
+  returns the value of the dynamic var *bind-probe* after an async operation."
   [n take-cb]
   (frequencies
-   (repeatedly n
-               (fn []
-                 (try (take-cb) (catch Throwable _ :threw))))))
+   (repeatedly n take-cb)))
 
 (deftest binding-bound-outside-async-and-go-block-survives-park
   (testing "binding set outside async is never lost across an !<! park with 0 loss"

@@ -7,7 +7,7 @@
   <name>futurama</name>
   <version>1.4.8</version>
   <scm>
-    <tag>1.4.7</tag>
+    <tag>1.4.8</tag>
     <url>https://github.com/gateless/futurama</url>
     <connection>scm:git:git://github.com/gateless/futurama.git</connection>
     <developerConnection>scm:git:ssh://git@github.com/gateless/futurama.git</developerConnection>

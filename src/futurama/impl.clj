@@ -192,19 +192,19 @@
 ;;; so that a resume on another thread sees the correct frame.
 
 (defn ioc-take!
-  "Calls core.async's ioc-take!, but snapshots the thread binding frame before registering the callback."
+  "Calls core.async's `ioc-macros/take!` (the `<!` parking terminator), but snapshots the thread binding frame before registering the callback."
   [state blk c]
   (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
   (rt/take! state blk c))
 
 (defn ioc-put!
-  "Calls core.async's ioc-put!, but snapshots the thread binding frame before registering the callback."
+  "Calls core.async's `ioc-macros/put!` (the `>!` parking terminator), but snapshots the thread binding frame before registering the callback."
   [state blk c val]
   (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
   (rt/put! state blk c val))
 
 (defn ioc-alts!
-  "Calls core.async's ioc-alts!, but snapshots the thread binding frame before registering the callback."
+  "Calls core.async's `ioc-alts!` (the `alts!` parking terminator), but snapshots the thread binding frame before registering the callback."
   [state cont-block ports & opts]
   (rt/aset-object state rt/BINDINGS-IDX (Var/getThreadBindingFrame))
   (apply async/ioc-alts! state cont-block ports opts))

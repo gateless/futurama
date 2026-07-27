@@ -22,6 +22,7 @@ All these types can be consumed and composed using a consistent API, making it e
 - **Thread Pool Management**: Route work to appropriate pools (`:io`, `:compute`, `:mixed`) for optimal resource usage
 - **Deep Nesting Support**: Automatically unwrap nested async values
 - **Exception-as-Value**: Uncaught exceptions are returned as values and rethrown on read
+- **Thread Binding Preservation**: Dynamic `binding`s are preserved across parks and cross-thread resumes, in both `async` and `go` blocks
 
 ## Quick Start
 
@@ -414,6 +415,30 @@ When operations are cancelled, they receive a `CancellationException`:
     (catch CancellationException e
       (println "Operation was cancelled"))))
 ```
+
+### Dynamic Bindings
+
+Dynamic var bindings established with `binding` are preserved across parking
+operations — including when a parked `async` or `go` block resumes on a
+different thread from the pool. Bindings set *inside* a block before a park are
+retained after it resumes as well.
+
+```clojure
+(def ^:dynamic *request-id* nil)
+
+(binding [*request-id* "abc-123"]
+  (!<!! (async
+          (!<! (timeout 100))   ; parks; may resume on another pool thread
+          *request-id*)))
+;;=> "abc-123"
+```
+
+> **Note:** futurama's own `async`/`async!` blocks get this behavior directly.
+> To extend the same guarantee to plain `clojure.core.async/go` blocks,
+> requiring futurama alters the root binding of core.async's internal
+> `async-custom-terminators`. This is a global, JVM-wide effect that applies to
+> every `go` block compiled after the library is loaded, and is a temporary
+> measure pending an upstream core.async fix.
 
 ## Building
 

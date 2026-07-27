@@ -535,31 +535,63 @@
                (fn []
                  (try (take-cb) (catch Throwable _ :threw))))))
 
-(deftest binding-bound-outside-async-survives-park
+(deftest binding-bound-outside-async-and-go-block-survives-park
   (testing "binding set outside async is never lost across an !<! park with 0 loss"
     (let [n 2000
+          f (fn []
+              (async :ignore))
           freqs (probe-binding n (fn []
                                    (binding [*bind-probe* :bound]
                                      (!<!! (async
-                                             (!<! (async :ignore))
+                                             (!<! (f))
                                              *bind-probe*)))))]
+      (is (= {:bound n} freqs)
+          (str "binding lost with bind-outside: " freqs))))
+  (testing "binding set outside go is never lost across an <! park with 0 loss"
+    (let [n 2000
+          f (fn []
+              (go :ignore))
+          freqs (probe-binding n (fn []
+                                   (binding [*bind-probe* :bound]
+                                     (<!! (go
+                                            (<! (f))
+                                            *bind-probe*)))))]
       (is (= {:bound n} freqs)
           (str "binding lost with bind-outside: " freqs)))))
 
-(deftest binding-bound-inside-async-survives-park
+(deftest binding-bound-inside-async-and-go-block-survives-park
   (testing "binding set inside async survives an !<! park (window widened for determinism) with 0 loss"
-    (let [orig @#'impl/ioc-take!
-          n 500]
+    (let [ioc-take @#'impl/ioc-take!
+          n 500
+          f (fn []
+              (async :ignore))]
       (with-redefs [impl/ioc-take! (fn [state blk c]
-                                     (let [r (orig state blk c)]
+                                     (let [r (ioc-take state blk c)]
                                        (when (nil? r)
                                          (java.util.concurrent.locks.LockSupport/parkNanos 200000))
                                        r))]
         (let [freqs (probe-binding n (fn []
                                        (!<!! (async
                                                (binding [*bind-probe* :bound]
-                                                 (!<! (async :ignore))
+                                                 (!<! (f))
                                                  *bind-probe*)))))]
+          (is (= {:bound n} freqs)
+              (str "binding lost across park: " freqs))))))
+  (testing "binding set inside go block survives an <! park (window widened for determinism) with 0 loss"
+    (let [ioc-take @#'impl/ioc-take!
+          n 500
+          f (fn []
+              (go :ignore))]
+      (with-redefs [impl/ioc-take! (fn [state blk c]
+                                     (let [r (ioc-take state blk c)]
+                                       (when (nil? r)
+                                         (java.util.concurrent.locks.LockSupport/parkNanos 200000))
+                                       r))]
+        (let [freqs (probe-binding n (fn []
+                                       (<!! (go
+                                              (binding [*bind-probe* :bound]
+                                                (<! (f))
+                                                *bind-probe*)))))]
           (is (= {:bound n} freqs)
               (str "binding lost across park: " freqs)))))))
 

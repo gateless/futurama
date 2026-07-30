@@ -7,7 +7,8 @@
                                    async-cancelled? async-every? async-for async-map
                                    async-postwalk async-prewalk async-reduce async-some
                                    async? get-pool thread with-pool] :as f]
-            [futurama.impl :as impl])
+            [futurama.impl :as impl]
+            [futurama.core-async-patching :as cap])
   (:import [clojure.lang ExceptionInfo]
            [java.util.concurrent CompletableFuture Executor ExecutorService Executors TimeUnit]))
 
@@ -551,9 +552,9 @@
 
 (deftest binding-bound-inside-async-and-go-block-survives-park
   (testing "binding set inside async survives an !<! park (window widened for determinism) with 0 loss"
-    (let [ioc-take @#'impl/ioc-take!
+    (let [ioc-take @#'cap/ioc-take!
           n 500]
-      (with-redefs [impl/ioc-take! (binding-race-instrument! ioc-take)]
+      (with-redefs [cap/ioc-take! (binding-race-instrument! ioc-take)]
         (let [freqs (probe-binding n (fn []
                                        (!<!! (async
                                                (binding [*bind-probe* :bound]
@@ -562,15 +563,31 @@
           (is (= {:bound n} freqs)
               (str "binding lost across park: " freqs))))))
   (testing "binding set inside go block survives an <! park (window widened for determinism) with 0 loss"
-    (let [ioc-take @#'impl/ioc-take!
+    (let [ioc-take @#'cap/ioc-take!
           n 500]
-      (with-redefs [impl/ioc-take! (binding-race-instrument! ioc-take)]
+      (with-redefs [cap/ioc-take! (binding-race-instrument! ioc-take)]
         (let [freqs (probe-binding n (fn []
                                        (<!! (go
                                               (binding [*bind-probe* :bound]
                                                 (<! (timeout 1))
                                                 *bind-probe*)))))]
           (is (= {:bound n} freqs)
+              (str "binding lost across park: " freqs)))))))
+
+
+(deftest binding-nested-inside-async-and-go-block-survives-park
+  (testing "nested bindings with parks interpsersed correctly accumulates binding state"
+    (let [ioc-take @#'cap/ioc-take!
+          n 500]
+      (with-redefs [cap/ioc-take! (binding-race-instrument! ioc-take)]
+        (let [freqs (probe-binding n (fn []
+                                       (!<!! (async
+                                                 (binding [*bind-probe* 0]
+                                                   (!<! (timeout 1))
+                                                   (binding [*bind-probe* (inc *bind-probe*)]
+                                                     (!<! (timeout 1))
+                                                     *bind-probe*))))))]
+          (is (= {1 n} freqs)
               (str "binding lost across park: " freqs)))))))
 
 (deftest non-async-fast-path

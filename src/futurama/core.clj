@@ -54,6 +54,7 @@
    [clojure.core.async.impl.protocols :as core-impl]
    [clojure.core.reducers :as r]
    [futurama.impl :as impl]
+   [futurama.core-async-patching :as cap]
    [futurama.state :as state]
    [manifold.deferred :as d])
   (:import
@@ -322,7 +323,7 @@
                             `(try
                                ~@body
                                (catch Throwable ~'e
-                                 (unwrap-exception ~'e))) 1 [crossing-env &env] impl/async-custom-terminators)
+                                 (unwrap-exception ~'e))) 1 [crossing-env &env] cap/async-custom-terminators)
                        state# (-> (f#)
                                   (rt/aset-all! rt/USER-START-IDX port#
                                                 rt/BINDINGS-IDX captured-bindings#))]

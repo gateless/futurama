@@ -576,17 +576,30 @@
 
 
 (deftest binding-nested-inside-async-and-go-block-survives-park
-  (testing "nested bindings with parks interpsersed correctly accumulates binding state"
+  (testing "nested bindings with !<! parks interpsersed correctly accumulates binding state"
     (let [ioc-take @#'cap/ioc-take!
           n 500]
       (with-redefs [cap/ioc-take! (binding-race-instrument! ioc-take)]
         (let [freqs (probe-binding n (fn []
                                        (!<!! (async
-                                                 (binding [*bind-probe* 0]
+                                               (binding [*bind-probe* 0]
+                                                 (!<! (timeout 1))
+                                                 (binding [*bind-probe* (inc *bind-probe*)]
                                                    (!<! (timeout 1))
-                                                   (binding [*bind-probe* (inc *bind-probe*)]
-                                                     (!<! (timeout 1))
-                                                     *bind-probe*))))))]
+                                                   *bind-probe*))))))]
+          (is (= {1 n} freqs)
+              (str "binding lost across park: " freqs))))))
+  (testing "nested bindings with <! parks interpsersed correctly accumulates binding state"
+    (let [ioc-take @#'cap/ioc-take!
+          n 500]
+      (with-redefs [cap/ioc-take! (binding-race-instrument! ioc-take)]
+        (let [freqs (probe-binding n (fn []
+                                       (<!! (go
+                                              (binding [*bind-probe* 0]
+                                                (<! (timeout 1))
+                                                (binding [*bind-probe* (inc *bind-probe*)]
+                                                  (<! (timeout 1))
+                                                  *bind-probe*))))))]
           (is (= {1 n} freqs)
               (str "binding lost across park: " freqs)))))))
 

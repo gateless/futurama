@@ -53,8 +53,8 @@
    [clojure.core.async.impl.ioc-macros :as rt]
    [clojure.core.async.impl.protocols :as core-impl]
    [clojure.core.reducers :as r]
-   [futurama.impl :as impl]
    [futurama.core-async-patching :as cap]
+   [futurama.impl :as impl]
    [futurama.state :as state]
    [manifold.deferred :as d])
   (:import

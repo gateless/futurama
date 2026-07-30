@@ -18,8 +18,8 @@
         local-map (atom {::go-impl/next-idx local-start-idx})]
     `(fn state-machine#
        ([] (rt/aset-all! (AtomicReferenceArray. (int ~state-arr-size))
-             ~rt/FN-IDX state-machine#
-             ~rt/STATE-IDX ~(:start-block machine)))
+                         ~rt/FN-IDX state-machine#
+                         ~rt/STATE-IDX ~(:start-block machine)))
        ([~state-sym]
         (let [old-frame# (Var/getThreadBindingFrame)
               ret-value# (try
@@ -27,12 +27,12 @@
                            (loop []
                              (let [result# (case (int (rt/aget-object ~state-sym ~rt/STATE-IDX))
                                              ~@(mapcat
-                                                 (fn [[id blk]]
-                                                   [id `(let [~@(concat (#'go-impl/build-block-preamble local-map index state-sym blk)
-                                                                        (#'go-impl/build-block-body state-sym blk))
-                                                              ~@(#'go-impl/build-new-state local-map index state-sym blk)]
-                                                          ~(go-impl/terminate-block (last blk) state-sym custom-terminators))])
-                                                 (:blocks machine)))]
+                                                (fn [[id blk]]
+                                                  [id `(let [~@(concat (#'go-impl/build-block-preamble local-map index state-sym blk)
+                                                                       (#'go-impl/build-block-body state-sym blk))
+                                                             ~@(#'go-impl/build-new-state local-map index state-sym blk)]
+                                                         ~(go-impl/terminate-block (last blk) state-sym custom-terminators))])
+                                                (:blocks machine)))]
                                (if (identical? result# :recur)
                                  (recur)
                                  result#)))

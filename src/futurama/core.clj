@@ -46,7 +46,16 @@
   Property is read once, at namespace load time. Recommended for use
   primarily during development. Invalid blocking calls will throw in
   go block threads - use Thread.setDefaultUncaughtExceptionHandler()
-  to catch and handle."
+  to catch and handle.
+
+  IMPORTANT - load order:
+
+  Loading this namespace patches two core.async internals so that dynamic var
+  bindings survive parking operations. Both patches are consumed at macroexpansion
+  time, so any namespace containing `go` or `async` blocks that is compiled before
+  this namespace loads will keep the unpatched, race-prone state machine for the
+  life of the JVM. Require `futurama.core` as one of the first namespaces at
+  application start (and before AOT-compiling code with `go` blocks)."
   (:require
    [clojure.core.async :as async]
    [clojure.core.async.impl.dispatch :as run-impl]

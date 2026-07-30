@@ -22,7 +22,7 @@ All these types can be consumed and composed using a consistent API, making it e
 - **Thread Pool Management**: Route work to appropriate pools (`:io`, `:compute`, `:mixed`) for optimal resource usage
 - **Deep Nesting Support**: Automatically unwrap nested async values
 - **Exception-as-Value**: Uncaught exceptions are returned as values and rethrown on read
-- **Thread Binding Preservation**: Dynamic `binding`s are preserved across parks and cross-thread resumes, in both `async` and `go` blocks
+- **Thread Binding Preservation**: Dynamic `binding`s are preserved across parks and cross-thread resumes, in both `async` and `go` blocks (see [Load Order](#load-order))
 
 ## Quick Start
 
@@ -296,13 +296,68 @@ Add Futurama to your project dependencies:
 
 **deps.edn**
 ```clojure
-{:deps {com.github.gateless/futurama {:mvn/version "1.4.8"}}}
+{:deps {com.github.gateless/futurama {:mvn/version "1.4.9"}}}
 ```
 
 **Leiningen project.clj**
 ```clojure
-[com.github.gateless/futurama "1.4.8"]
+[com.github.gateless/futurama "1.4.9"]
 ```
+
+## Load Order
+
+> [!IMPORTANT]
+> **Load `futurama.core` before any namespace that contains `go` or `async` blocks.**
+
+To preserve dynamic bindings across parks, futurama patches two internals of core.async when
+`futurama.core` loads (see [Dynamic Bindings](#dynamic-bindings)). Both patches are consumed at
+**macroexpansion time** — `go` and `async` bake the generated state machine into your compiled
+code. A namespace compiled *before* futurama loads keeps the unpatched, race-prone machine
+permanently, for the life of that JVM. Requiring futurama later does not fix it retroactively, and
+nothing warns you: bindings just go missing occasionally, under load.
+
+Make `futurama.core` the first require in your entrypoint namespace:
+
+```clj
+(ns myapp.main
+  (:require
+   ;; MUST be first — futurama patches core.async's state-machine codegen at load
+   ;; time, and `go` bakes that codegen in at macroexpansion. Any namespace compiled
+   ;; before this line keeps the unpatched machine and can lose bindings across parks.
+   [futurama.core]
+   [myapp.handlers]
+   [myapp.system])
+  (:gen-class))
+```
+
+`:require` specs load in the order listed, so being first in the vector is sufficient — provided
+this namespace is the root of your load graph. Note this deliberately breaks alphabetical require
+sorting; if your linter enforces it, suppress it on this form rather than reordering.
+
+**AOT compilation.** The same rule applies at *build* time. If you AOT-compile (uberjar,
+`compile`, GraalVM native-image), load futurama before compiling anything containing `go` blocks:
+
+```clj
+;; build.clj
+(require 'futurama.core)   ; patch core.async before compiling
+(b/compile-clj {:basis basis :ns-compile '[myapp.main] :class-dir class-dir})
+```
+
+**Verifying the patch is live.** The terminator table names futurama's functions once patched:
+
+```clj
+(require '[clojure.core.async.impl.ioc-macros :as rt])
+(get rt/async-custom-terminators 'clojure.core.async/<!)
+;;=> futurama.core-async-patching/ioc-take!
+```
+
+This confirms the patch is *installed*; it does not tell you whether an already-compiled namespace
+picked it up. When in doubt, check that your entrypoint requires `futurama.core` first.
+
+> **Edge case:** the patches are applied with `alter-var-root`. If core.async is AOT-compiled with
+> `-Dclojure.compiler.direct-linking=true`, the call into `emit-state-machine` is inlined and the
+> patch cannot take effect. core.async ships source-only, so this only arises if you AOT-compile
+> core.async yourself with direct linking enabled.
 
 ## Requirements
 
@@ -433,12 +488,17 @@ retained after it resumes as well.
 ;;=> "abc-123"
 ```
 
-> **Note:** futurama's own `async`/`async!` blocks get this behavior directly.
-> To extend the same guarantee to plain `clojure.core.async/go` blocks,
-> requiring futurama alters the root binding of core.async's internal
-> `async-custom-terminators`. This is a global, JVM-wide effect that applies to
-> every `go` block compiled after the library is loaded, and is a temporary
-> measure pending an upstream core.async fix.
+> **Note:** futurama preserves bindings by patching two core.async internals when
+> `futurama.core` loads: the parking terminators (`<!`, `>!`, `alts!`) are replaced with versions
+> that snapshot the thread binding frame *before* registering the resume callback, and
+> `clojure.core.async.impl.go/emit-state-machine` is replaced with a version that no longer writes
+> the binding frame back in a `finally` (where a slower parking thread could clobber a frame
+> already advanced by a resume on another thread). Both are global, JVM-wide effects that apply to
+> every `go` block compiled after the library loads, and are a temporary measure pending an
+> upstream core.async fix.
+>
+> Because they take effect at macroexpansion time, **load order matters** — see
+> [Load Order](#load-order).
 
 ## Building
 

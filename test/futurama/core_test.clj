@@ -574,7 +574,6 @@
           (is (= {:bound n} freqs)
               (str "binding lost across park: " freqs)))))))
 
-
 (deftest binding-nested-inside-async-and-go-block-survives-park
   (testing "nested bindings with !<! parks interpsersed correctly accumulates binding state"
     (let [ioc-take @#'cap/ioc-take!

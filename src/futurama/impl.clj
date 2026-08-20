@@ -162,7 +162,7 @@
   the public take! function in core.async which doesn't expose that
   part of the ReadPort protocol to callers."
   ([x handler]
-   (async-read-port-take! x handler false))
+   (async-read-port-take! x handler true))
   ([x ^Lock handler fast-resume?]
    (cond (and (async-completable-reader? x) (completed? x))
          (recur (get! x) handler fast-resume?)
@@ -200,23 +200,25 @@
                  _ (.unlock handler)]
              (when take-cb
                (recur @result (async/fn-handler take-cb (core-impl/blockable? handler)) fast-resume?))))
-         fast-resume?
-         (box x)
          :else
          (let [_ (.lock handler)
                take-cb (and (core-impl/active? handler)
                             (core-impl/commit handler))
                _ (.unlock handler)]
-           (if (:on-caller (meta take-cb))
-             (take-cb x)
-             (if-some [gp @get-pool]
-               (.execute ^Executor (gp :mixed) #(take-cb x))
-               ;; fallback to runnning on the same thread if failed
-               ;; to find the pool for some reason, can cause
-               ;; non-channel asyncs to stackoverflow, particularly
-               ;; deferreds.
-               (take-cb x)))
-           nil))))
+           (when take-cb
+             (if fast-resume?
+               (box x)
+               (do
+                 (if (:on-caller (meta take-cb))
+                    (take-cb x)
+                    (if-some [gp @get-pool]
+                      (.execute ^Executor (gp :mixed) #(take-cb x))
+                      ;; fallback to runnning on the same thread if failed
+                      ;; to find the pool for some reason, can cause
+                      ;; non-channel asyncs to stackoverflow, particularly
+                      ;; deferreds.
+                      (take-cb x)))
+                 nil)))))))
 
 (defn async-write-port-put!
   [x val handler]

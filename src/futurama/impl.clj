@@ -193,9 +193,13 @@
                                  (delegating-handler handler)
                                  (core-impl/take! x))]
            (let [_ (.lock handler)
-                 take-cb (core-impl/commit handler)
+                 ;; in this fast-resume case active? will always be
+                 ;; true, but a pattern is a pattern
+                 take-cb (and (core-impl/active? handler)
+                              (core-impl/commit handler))
                  _ (.unlock handler)]
-             (recur @result (async/fn-handler take-cb (core-impl/blockable? handler)) fast-resume?)))
+             (when take-cb
+               (recur @result (async/fn-handler take-cb (core-impl/blockable? handler)) fast-resume?))))
          fast-resume?
          (box x)
          :else
@@ -203,13 +207,15 @@
                take-cb (and (core-impl/active? handler)
                             (core-impl/commit handler))
                _ (.unlock handler)]
-           (if-some [gp @get-pool]
-             (.execute ^Executor (gp :mixed) #(take-cb x))
-             ;; fallback to runnning on the same thread if failed
-             ;; to find the pool for some reason, can cause
-             ;; non-channel asyncs to stackoverflow, particularly
-             ;; deferreds.
-             (take-cb x))
+           (if (:on-caller (meta take-cb))
+             (take-cb x)
+             (if-some [gp @get-pool]
+               (.execute ^Executor (gp :mixed) #(take-cb x))
+               ;; fallback to runnning on the same thread if failed
+               ;; to find the pool for some reason, can cause
+               ;; non-channel asyncs to stackoverflow, particularly
+               ;; deferreds.
+               (take-cb x)))
            nil))))
 
 (defn async-write-port-put!

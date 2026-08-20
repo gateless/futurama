@@ -844,6 +844,10 @@
   ;; 1. very visible stackoverflows
   ;; 2. again stackoverflows deep in channel code that go to stderr if anywhere
   ;; 3. everything just hangs
+  ;;
+  ;; when I have gotten this test to fail using deferreds, the
+  ;; stackoverflow error is printed from some random manifold thread,
+  ;; and the test then still passes :/
   (let [cs (vec (repeatedly 10000 #(async (!<! (clojure.core.async/timeout (rand-int 1000))))))]
     (!<!!
      (async

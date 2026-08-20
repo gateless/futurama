@@ -368,12 +368,19 @@
 (deftype AsyncReader [val]
   core-impl/ReadPort
   (take! [_ handler]
-    (impl/async-read-port-take! val handler)))
+    (impl/async-read-port-take! val handler (instance? ManyToManyChannel val))))
 
 (defn ->async-reader
   "Creates an AsyncReader to recursively read via `take!` and `poll!` until a value is returned."
   [x]
-  (AsyncReader. x))
+  ;; types we control the ReadPort extension to don't need
+  ;; wrapping. and too much wrapping interferes with the ability to
+  ;; use fast-resume.
+  (if (or (instance? AsyncReader x) 
+          (instance? Deferred x)
+          (instance? CompletableFuture x))
+    x
+    (AsyncReader. x)))
 
 (def ^:no-doc rdr ->async-reader)
 
@@ -797,7 +804,7 @@
 (extend-type CompletableFuture
   core-impl/ReadPort
   (take! [x handler]
-    (impl/async-read-port-take! x handler))
+    (impl/async-read-port-take! x handler true))
 
   core-impl/WritePort
   (put! [x val handler]
@@ -850,7 +857,7 @@
 (extend-type Deferred
   core-impl/ReadPort
   (take! [x handler]
-    (impl/async-read-port-take! x handler))
+    (impl/async-read-port-take! x handler true))
 
   core-impl/WritePort
   (put! [x val handler]

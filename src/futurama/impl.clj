@@ -1,6 +1,6 @@
 (ns ^:no-doc futurama.impl
   (:require
-   [clojure.core.async :refer [take!] :as async]
+   [clojure.core.async :as async]
    [clojure.core.async.impl.go :as go-impl]
    [clojure.core.async.impl.channels :refer [box]]
    [clojure.core.async.impl.protocols :as core-impl])
@@ -115,54 +115,102 @@
     (on-cancel-interrupt port fut)
     port))
 
-(defn- async-reader-handler*
-  [cb val]
-  (if (async? val)
-    (take! val (partial async-reader-handler* cb))
-    (cb val)))
+(defn delegating-handler [^Lock handler around-callback]
+  (reify
+    Lock
+    (lock [_] (.lock handler))
+    (unlock [_] (.unlock handler))
+    core-impl/Handler
+    (active? [_] (core-impl/active? handler))
+    (blockable? [_] (core-impl/blockable? handler))
+    (lock-id [_] (core-impl/lock-id handler))
+    (commit [_]
+      (around-callback (core-impl/commit handler)))))
 
-(defn async-reader-handler
-  [cb]
-  (partial async-reader-handler* cb))
+(def get-pool (delay
+                (when-some [v (ns-resolve 'futurama.core 'get-pool)]
+                  @v)))
 
 (defn async-read-port-take!
-  "Shared `ReadPort/take!` implementation, supports three types of async values:
-  - an `AsyncCompletableReader` (futurama's completable types): use the
-    `completed?`/`get!` synchronous fast-path, otherwise register via `on-complete`.
-  - a plain core.async `ReadPort` (e.g. a core.async channel): use `poll!` as the synchronous
-    fast-path, otherwise register via `take!`.
-  - anything else: box the value directly.
+  "Shared `ReadPort/take!` implementation, supports three types of
+  async values:
+  - an `AsyncCompletableReader` (futurama's completable types): use
+    the `completed?`/`get!` synchronous fast-path, otherwise register
+    via `on-complete`.
+  - a plain core.async `ReadPort` (e.g. a core.async channel):
+    supports \"fast-resume\" reads from the channel as a fast path,
+    otherwise adds a wrapped version of the handler via the take!
+    function of the ReadPort protocol. The wrapping is to support
+    recursive unrolling.
+  - anything else: box the value directly if fast-resume? is selected,
+    otherwise pass to callback from handler.
+  
+  If a value is read from x the handler is always commited. This
+  function delays committing as long as possible when unrolling nested
+  asyncs. Still will very likely get weird behavior if you mix nested
+  asyncs with alts.
 
-  Commits the handler up front so every branch follows the `ReadPort` contract. Without this,
-  reading a plain value inside `alts!` could leave a pending take on the other ports that
-  later reads and drops a value."
-  [x handler]
-  (let [^Lock handler handler
-        commit-handler (fn do-commit []
-                         (.lock handler)
-                         (let [take-cb (and (core-impl/active? handler)
-                                            (core-impl/commit handler))]
-                           (.unlock handler)
-                           take-cb))]
-    (when-let [cb (commit-handler)]
-      (cond
-        (async-completable-reader? x)
-        (if (completed? x)
-          (let [r (get! x)]
-            (if (async? r)
-              (do (take! r (async-reader-handler cb)) nil)
-              (box r)))
-          (do (on-complete x (async-reader-handler cb)) nil))
+  Metadata on the callback in the handler is preserved and copied if a
+  new handler needs to be created when unnesting. This preserves
+  behavior with handler callbacks marked as on-caller.
 
-        (async? x)
-        (if-some [v (async/poll! x)]
-          (if (async? v)
-            (do (take! v (async-reader-handler cb)) nil)
-            (box v))
-          (do (take! x (async-reader-handler cb)) nil))
-
-        :else
-        (box x)))))
+  This function always handler the fast-resume case when reading from
+  a channel. The fast-resume? argument controls if the caller of this
+  function supports fast-resume. Most futurama impls of the ReadPort
+  protocol that call this function don't support the fast-resume part
+  of the ReadPort protcol since they were originally written against
+  the public take! function in core.async which doesn't expose that
+  part of the ReadPort protocol to callers."
+  ([x handler]
+   (async-read-port-take! x handler false))
+  ([x ^Lock handler fast-resume?]
+   (cond (and (async-completable-reader? x) (completed? x))
+         (recur (get! x) handler fast-resume?)
+         (async-completable-reader? x)
+         (do
+           (on-complete x (fn [result] (async-read-port-take! result handler false)))
+           nil)
+         (async? x)
+         (when-some [result (->> (fn [take-cb]
+                                   ;; copy metadata to
+                                   ;; propagate :on-caller setting
+                                   (with-meta
+                                     (fn [value]
+                                       (async-read-port-take!
+                                        value
+                                        (async/fn-handler
+                                         take-cb
+                                         (core-impl/blockable? handler))
+                                        ;; when running in anything
+                                        ;; other than the first level
+                                        ;; callback, we can't support
+                                        ;; fast resume, because we
+                                        ;; can't be sure we are likely
+                                        ;; not running on the same
+                                        ;; thread.
+                                        false))
+                                     (meta take-cb)))
+                                 (delegating-handler handler)
+                                 (core-impl/take! x))]
+           (let [_ (.lock handler)
+                 take-cb (core-impl/commit handler)
+                 _ (.unlock handler)]
+             (recur @result (async/fn-handler take-cb (core-impl/blockable? handler)) fast-resume?)))
+         fast-resume?
+         (box x)
+         :else
+         (let [_ (.lock handler)
+               take-cb (and (core-impl/active? handler)
+                            (core-impl/commit handler))
+               _ (.unlock handler)]
+           (if-some [gp @get-pool]
+             (.execute ^Executor (gp :mixed) #(take-cb x))
+             ;; fallback to runnning on the same thread if failed
+             ;; to find the pool for some reason, can cause
+             ;; non-channel asyncs to stackoverflow, particularly
+             ;; deferreds.
+             (take-cb x))
+           nil))))
 
 (defn async-write-port-put!
   [x val handler]

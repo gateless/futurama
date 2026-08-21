@@ -127,98 +127,88 @@
     (commit [_]
       (around-callback (core-impl/commit handler)))))
 
-(def get-pool (delay
-                (when-some [v (ns-resolve 'futurama.core 'get-pool)]
-                  @v)))
-
 (defn async-read-port-take!
   "Shared `ReadPort/take!` implementation, supports three types of
   async values:
   - an `AsyncCompletableReader` (futurama's completable types): use
     the `completed?`/`get!` synchronous fast-path, otherwise register
     via `on-complete`.
-  - a plain core.async `ReadPort` (e.g. a core.async channel):
-    supports \"fast-resume\" reads from the channel as a fast path,
-    otherwise adds a wrapped version of the handler via the take!
-    function of the ReadPort protocol. The wrapping is to support
-    recursive unrolling.
-  - anything else: box the value directly if fast-resume? is selected,
-    otherwise pass to callback from handler.
-  
-  If a value is read from x the handler is always commited. This
+  - a plain core.async `ReadPort` (e.g. a core.async channel): call
+    `core-impl/take!` with a delegating handler that wraps the
+    callback to support recursive unrolling. If `core-impl/take!`
+    returns a value synchronously, commit the handler and recur with
+    that value.
+  - anything else: commit the handler and, if fast-resume? is true,
+    return the value boxed. Otherwise invoke the callback directly if
+    it is marked :on-caller, or dispatch it to callback-pool.
+
+  If a value is read from x the handler is always committed. This
   function delays committing as long as possible when unrolling nested
   asyncs. Still will very likely get weird behavior if you mix nested
   asyncs with alts.
 
   Metadata on the callback in the handler is preserved and copied if a
   new handler needs to be created when unnesting. This preserves
-  behavior with handler callbacks marked as on-caller.
+  behavior with handler callbacks marked as :on-caller.
 
-  This function always handler the fast-resume case when reading from
+  This function always handles the fast-resume case when reading from
   a channel. The fast-resume? argument controls if the caller of this
   function supports fast-resume. Most futurama impls of the ReadPort
   protocol that call this function don't support the fast-resume part
-  of the ReadPort protcol since they were originally written against
+  of the ReadPort protocol since they were originally written against
   the public take! function in core.async which doesn't expose that
   part of the ReadPort protocol to callers."
-  ([x handler]
-   (async-read-port-take! x handler true))
-  ([x ^Lock handler fast-resume?]
-   (cond (and (async-completable-reader? x) (completed? x))
-         (recur (get! x) handler fast-resume?)
-         (async-completable-reader? x)
-         (do
-           (on-complete x (fn [result] (async-read-port-take! result handler false)))
-           nil)
-         (async? x)
-         (when-some [result (->> (fn [take-cb]
-                                   ;; copy metadata to
-                                   ;; propagate :on-caller setting
-                                   (with-meta
-                                     (fn [value]
-                                       (async-read-port-take!
-                                        value
-                                        (async/fn-handler
-                                         take-cb
-                                         (core-impl/blockable? handler))
-                                        ;; when running in anything
-                                        ;; other than the first level
-                                        ;; callback, we can't support
-                                        ;; fast resume, because we
-                                        ;; can't be sure we are likely
-                                        ;; not running on the same
-                                        ;; thread.
-                                        false))
-                                     (meta take-cb)))
-                                 (delegating-handler handler)
-                                 (core-impl/take! x))]
-           (let [_ (.lock handler)
-                 ;; in this fast-resume case active? will always be
-                 ;; true, but a pattern is a pattern
-                 take-cb (and (core-impl/active? handler)
-                              (core-impl/commit handler))
-                 _ (.unlock handler)]
-             (when take-cb
-               (recur @result (async/fn-handler take-cb (core-impl/blockable? handler)) fast-resume?))))
-         :else
-         (let [_ (.lock handler)
-               take-cb (and (core-impl/active? handler)
-                            (core-impl/commit handler))
-               _ (.unlock handler)]
-           (when take-cb
-             (if fast-resume?
-               (box x)
-               (do
-                 (if (:on-caller (meta take-cb))
-                    (take-cb x)
-                    (if-some [gp @get-pool]
-                      (.execute ^Executor (gp :mixed) #(take-cb x))
-                      ;; fallback to runnning on the same thread if failed
-                      ;; to find the pool for some reason, can cause
-                      ;; non-channel asyncs to stackoverflow, particularly
-                      ;; deferreds.
-                      (take-cb x)))
-                 nil)))))))
+  [x ^Lock handler fast-resume? callback-pool]
+  (cond (and (async-completable-reader? x) (completed? x))
+        (recur (get! x) handler fast-resume? callback-pool)
+        (async-completable-reader? x)
+        (do
+          (on-complete x (fn [result] (async-read-port-take! result handler false callback-pool)))
+          nil)
+        (async? x)
+        (when-some [result (->> (fn [take-cb]
+                                  ;; copy metadata to
+                                  ;; propagate :on-caller setting
+                                  (with-meta
+                                    (fn [value]
+                                      (async-read-port-take!
+                                       value
+                                       (async/fn-handler
+                                        take-cb
+                                        (core-impl/blockable? handler))
+                                       ;; when running in anything
+                                       ;; other than the first level
+                                       ;; callback, we can't support
+                                       ;; fast resume, because we
+                                       ;; can't be sure we are likely
+                                       ;; not running on the same
+                                       ;; thread.
+                                       false
+                                       callback-pool))
+                                    (meta take-cb)))
+                                (delegating-handler handler)
+                                (core-impl/take! x))]
+          (let [_ (.lock handler)
+                ;; in this fast-resume case active? will always be
+                ;; true, but a pattern is a pattern
+                take-cb (and (core-impl/active? handler)
+                             (core-impl/commit handler))
+                _ (.unlock handler)]
+            (when take-cb
+              (recur @result (async/fn-handler take-cb (core-impl/blockable? handler)) fast-resume? callback-pool))))
+        :else
+        (let [_ (.lock handler)
+              take-cb (and (core-impl/active? handler)
+                           (core-impl/commit handler))
+              _ (.unlock handler)]
+          (when take-cb
+            (if fast-resume?
+              (box x)
+              (do
+                (if (:on-caller (meta take-cb))
+                  (take-cb x)
+                  (.execute ^Executor callback-pool #(take-cb x)))
+                nil))))))
 
 (defn async-write-port-put!
   [x val handler]

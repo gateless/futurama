@@ -368,7 +368,7 @@
 (deftype AsyncReader [val]
   core-impl/ReadPort
   (take! [_ handler]
-    (impl/async-read-port-take! val handler)))
+    (impl/async-read-port-take! val handler true (or *thread-pool* (get-pool :mixed)))))
 
 (defn ->async-reader
   "Creates an AsyncReader to recursively read via `take!` and `poll!` until a value is returned."
@@ -687,7 +687,7 @@
 (extend-type Future
   core-impl/ReadPort
   (take! [x handler]
-    (impl/async-read-port-take! x handler))
+    (impl/async-read-port-take! x handler true (or *thread-pool* (get-pool :mixed))))
 
   impl/AsyncCompletableReader
   (get! [fut]
@@ -753,7 +753,7 @@
 (extend-type IDeref
   core-impl/ReadPort
   (take! [x handler]
-    (impl/async-read-port-take! x handler))
+    (impl/async-read-port-take! x handler true (or *thread-pool* (get-pool :mixed))))
 
   impl/AsyncCompletableReader
   (get! [ref]
@@ -797,7 +797,7 @@
 (extend-type CompletableFuture
   core-impl/ReadPort
   (take! [x handler]
-    (impl/async-read-port-take! x handler))
+    (impl/async-read-port-take! x handler true (or *thread-pool* (get-pool :mixed))))
 
   core-impl/WritePort
   (put! [x val handler]
@@ -850,7 +850,7 @@
 (extend-type Deferred
   core-impl/ReadPort
   (take! [x handler]
-    (impl/async-read-port-take! x handler))
+    (impl/async-read-port-take! x handler true (or *thread-pool* (get-pool :mixed))))
 
   core-impl/WritePort
   (put! [x val handler]

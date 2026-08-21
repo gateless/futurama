@@ -373,9 +373,6 @@
 (defn ->async-reader
   "Creates an AsyncReader to recursively read via `take!` and `poll!` until a value is returned."
   [x]
-  ;; types we control the ReadPort extension to don't need
-  ;; wrapping. and too much wrapping interferes with the ability to
-  ;; use fast-resume.
   (AsyncReader. x))
 
 (def ^:no-doc rdr ->async-reader)

@@ -158,57 +158,65 @@
   of the ReadPort protocol since they were originally written against
   the public take! function in core.async which doesn't expose that
   part of the ReadPort protocol to callers."
-  [x ^Lock handler fast-resume? callback-pool]
-  (cond (and (async-completable-reader? x) (completed? x))
-        (recur (get! x) handler fast-resume? callback-pool)
-        (async-completable-reader? x)
-        (do
-          (on-complete x (fn [result] (async-read-port-take! result handler false callback-pool)))
-          nil)
-        (async? x)
-        (when-some [result (->> (fn [take-cb]
-                                  ;; copy metadata to
-                                  ;; propagate :on-caller setting
-                                  (with-meta
-                                    (fn [value]
-                                      (async-read-port-take!
-                                       value
-                                       (async/fn-handler
-                                        take-cb
-                                        (core-impl/blockable? handler))
-                                       ;; when running in anything
-                                       ;; other than the first level
-                                       ;; callback, we can't support
-                                       ;; fast resume, because we
-                                       ;; can't be sure we are likely
-                                       ;; not running on the same
-                                       ;; thread.
-                                       false
-                                       callback-pool))
-                                    (meta take-cb)))
-                                (delegating-handler handler)
-                                (core-impl/take! x))]
-          (let [_ (.lock handler)
-                ;; in this fast-resume case active? will always be
-                ;; true, but a pattern is a pattern
-                take-cb (and (core-impl/active? handler)
-                             (core-impl/commit handler))
-                _ (.unlock handler)]
-            (when take-cb
-              (recur @result (async/fn-handler take-cb (core-impl/blockable? handler)) fast-resume? callback-pool))))
-        :else
-        (let [_ (.lock handler)
-              take-cb (and (core-impl/active? handler)
-                           (core-impl/commit handler))
-              _ (.unlock handler)]
-          (when take-cb
-            (if fast-resume?
-              (box x)
-              (do
-                (if (:on-caller (meta take-cb))
-                  (take-cb x)
-                  (.execute ^Executor callback-pool #(take-cb x)))
-                nil))))))
+  [x ^Lock handler callback-pool fast-resume?]
+  ;; n.b. the Handler protocol function commit does two things
+  ;; 1. commits the handler so it is no longer active
+  ;; 2. returns the callback to run on commit
+  (cond
+    (and (async-completable-reader? x) (completed? x))
+    (recur (get! x) handler callback-pool fast-resume?)
+
+    (async-completable-reader? x)
+    (do
+      (on-complete x (fn completable-reader-callback [result]
+                       (async-read-port-take! result handler callback-pool false)))
+      nil)
+
+    (async? x)
+    (when-some [result (->> (fn do-around-callback
+                              [take-cb]
+                              ;; copy metadata to propagate :on-caller setting
+                              (with-meta
+                                (fn read-port-recursive-callback [value]
+                                  (async-read-port-take!
+                                   value
+                                   (async/fn-handler take-cb (core-impl/blockable? handler))
+                                   callback-pool
+                                   ;; when running in anything other than the first level callback, we
+                                   ;; can't support fast resume, because we can't be sure we are likely
+                                   ;; not running on the same thread.
+                                   false))
+                                (meta take-cb)))
+                            (delegating-handler handler)
+                            (core-impl/take! x))]
+      ;; we don't check active? here because in the alts case it will
+      ;; be false.  fn-handler is hard coded to return true for
+      ;; active?, so the only place it could not be true is in an alts
+      ;; handler. Channels commit the handler even though they don't
+      ;; call the callback in the fast resume case, and committing an
+      ;; alt-handler causes active? to return false
+      (let [_ (.lock handler)
+            take-cb (core-impl/commit handler)
+            _ (.unlock handler)]
+        (when take-cb
+          (recur @result
+                 (async/fn-handler take-cb (core-impl/blockable? handler))
+                 callback-pool
+                 fast-resume?))))
+
+    :else
+    (let [_ (.lock handler)
+          take-cb (and (core-impl/active? handler)
+                       (core-impl/commit handler))
+          _ (.unlock handler)]
+      (when take-cb
+        (if fast-resume?
+          (box x)
+          (do
+            (if (:on-caller (meta take-cb))
+              (take-cb x)
+              (.execute ^Executor callback-pool #(take-cb x)))
+            nil))))))
 
 (defn async-write-port-put!
   [x val handler]

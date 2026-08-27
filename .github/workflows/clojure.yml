@@ -8,11 +8,15 @@ on:
     branches:
       - '**'
 
+env:
+  CLOJURE_CLI_VERSION: '1.12.5.1664'
+
 jobs:
   test:
     strategy:
       matrix:
-        java_version: [corretto-25]
+        java_distribution: [corretto]
+        java_version: ['25']
         test_clojure_alias: [clojure-1.12]
         test_core_async_alias: [core.async-1.8, core.async-1.9]
       fail-fast: false
@@ -20,19 +24,24 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v7
-    - name: Tools setup
-      uses: jdx/mise-action@v4
+    - name: Setup Java
+      uses: actions/setup-java@v5
       with:
-        install: true
-        cache: true
-    - name: Tools config
-      env:
-        JAVA_VERSION: ${{matrix.java_version}}
-      run: |
-        mise use java@$JAVA_VERSION
-        mise install
-        echo "JAVA_HOME=$(mise where java)" >> $GITHUB_ENV
-        echo "$(mise where java)/bin" >> $GITHUB_PATH
+        distribution: ${{matrix.java_distribution}}
+        java-version: ${{matrix.java_version}}
+    - name: Setup Clojure
+      uses: DeLaGuardo/setup-clojure@13.6.1
+      with:
+        cli: ${{env.CLOJURE_CLI_VERSION}}
+    - name: Cache Clojure dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.m2/repository
+          ~/.gitlibs
+          ~/.deps.clj
+        key: cljdeps-${{runner.os}}-${{hashFiles('deps.edn')}}
+        restore-keys: cljdeps-${{runner.os}}-
     - name: Run tests
       env:
         TEST_CLOJURE_ALIAS: ${{matrix.test_clojure_alias}}
@@ -43,19 +52,26 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v7
-    - name: Tools setup
-      uses: jdx/mise-action@v4
+    - name: Setup GraalVM
+      uses: graalvm/setup-graalvm@v1
       with:
-        install: true
-        cache: true
-    - name: Tools config
-      run: |
-        mise use java@graalvm-22.3.1+java11
-        mise install
-        echo "JAVA_HOME=$(mise where java)" >> $GITHUB_ENV
-        echo "GRAALVM_HOME=$(mise where java)" >> $GITHUB_ENV
-        echo "$(mise where java)/bin" >> $GITHUB_PATH
-        gu install native-image
+        version: '22.3.1'
+        java-version: '11'
+        components: 'native-image'
+        github-token: ${{secrets.GITHUB_TOKEN}}
+    - name: Setup Clojure
+      uses: DeLaGuardo/setup-clojure@13.6.1
+      with:
+        cli: ${{env.CLOJURE_CLI_VERSION}}
+    - name: Cache Clojure dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.m2/repository
+          ~/.gitlibs
+          ~/.deps.clj
+        key: cljdeps-${{runner.os}}-${{hashFiles('deps.edn')}}
+        restore-keys: cljdeps-${{runner.os}}-
     - name: Run tests
       run: make test
     - name: Run clj-kondo linter

@@ -21,6 +21,7 @@ All these types can be consumed and composed using a consistent API, making it e
 - **Collection Utilities**: `async-map`, `async-reduce`, `async-for`, `async-some`, `async-every?`, and more
 - **Thread Pool Management**: Route work to appropriate pools (`:io`, `:compute`, `:mixed`) for optimal resource usage
 - **Deep Nesting Support**: Automatically unwrap nested async values
+- **Constant Stack Space**: Loops that read many async values do not grow the stack; when a value is already available, futurama resumes on the same thread via core.async's fast-resume path
 - **Exception-as-Value**: Uncaught exceptions are returned as values and rethrown on read
 - **Thread Binding Preservation**: Dynamic `binding`s are preserved across parks and cross-thread resumes, in both `async` and `go` blocks (see [Load Order](#load-order))
 
@@ -296,12 +297,12 @@ Add Futurama to your project dependencies:
 
 **deps.edn**
 ```clojure
-{:deps {com.github.gateless/futurama {:mvn/version "1.4.9"}}}
+{:deps {com.github.gateless/futurama {:mvn/version "1.5.0"}}}
 ```
 
 **Leiningen project.clj**
 ```clojure
-[com.github.gateless/futurama "1.4.9"]
+[com.github.gateless/futurama "1.5.0"]
 ```
 
 ## Load Order

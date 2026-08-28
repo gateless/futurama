@@ -19,7 +19,7 @@
   :app {:extra-paths ["app"]
         :extra-deps {com.github.clj-easy/graal-build-time {:mvn/version "1.0.6"}}}
 
-  :clj-kondo {:extra-deps {clj-kondo/clj-kondo {:mvn/version "2026.07.24"}}
+  :clj-kondo {:extra-deps {clj-kondo/clj-kondo {:mvn/version "2026.08.04"}}
               :main-opts ["-m" "clj-kondo.main"]}
 
   :test {:extra-paths ["test"]

@@ -140,7 +140,7 @@
     that value.
   - anything else: commit the handler and, if fast-resume? is true,
     return the value boxed. Otherwise invoke the callback directly if
-    it is marked :on-caller, or dispatch it to callback-pool.
+    it is marked :on-caller?, or dispatch it to callback-pool.
 
   If a value is read from x the handler is always committed. This
   function delays committing as long as possible when unrolling nested
@@ -149,7 +149,7 @@
 
   Metadata on the callback in the handler is preserved and copied if a
   new handler needs to be created when unnesting. This preserves
-  behavior with handler callbacks marked as :on-caller.
+  behavior with handler callbacks marked as :on-caller?.
 
   This function always handles the fast-resume case when reading from
   a channel. The fast-resume? argument controls if the caller of this
@@ -175,7 +175,7 @@
     (async? x)
     (when-some [result (->> (fn do-around-callback
                               [take-cb]
-                              ;; copy metadata to propagate :on-caller setting
+                              ;; copy metadata to propagate :on-caller? setting
                               (with-meta
                                 (fn read-port-recursive-callback [value]
                                   (async-read-port-take!
@@ -213,7 +213,7 @@
         (if fast-resume?
           (box x)
           (do
-            (if (:on-caller (meta take-cb))
+            (if (:on-caller? (meta take-cb))
               (take-cb x)
               (.execute ^Executor callback-pool #(take-cb x)))
             nil))))))

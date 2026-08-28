@@ -1,6 +1,6 @@
 (ns ^:no-doc futurama.impl
   (:require
-   [clojure.core.async :refer [take!] :as async]
+   [clojure.core.async :as async]
    [clojure.core.async.impl.go :as go-impl]
    [clojure.core.async.impl.channels :refer [box]]
    [clojure.core.async.impl.protocols :as core-impl])
@@ -115,54 +115,108 @@
     (on-cancel-interrupt port fut)
     port))
 
-(defn- async-reader-handler*
-  [cb val]
-  (if (async? val)
-    (take! val (partial async-reader-handler* cb))
-    (cb val)))
-
-(defn async-reader-handler
-  [cb]
-  (partial async-reader-handler* cb))
+(defn delegating-handler [^Lock handler around-callback]
+  (reify
+    Lock
+    (lock [_] (.lock handler))
+    (unlock [_] (.unlock handler))
+    core-impl/Handler
+    (active? [_] (core-impl/active? handler))
+    (blockable? [_] (core-impl/blockable? handler))
+    (lock-id [_] (core-impl/lock-id handler))
+    (commit [_]
+      (around-callback (core-impl/commit handler)))))
 
 (defn async-read-port-take!
-  "Shared `ReadPort/take!` implementation, supports three types of async values:
-  - an `AsyncCompletableReader` (futurama's completable types): use the
-    `completed?`/`get!` synchronous fast-path, otherwise register via `on-complete`.
-  - a plain core.async `ReadPort` (e.g. a core.async channel): use `poll!` as the synchronous
-    fast-path, otherwise register via `take!`.
-  - anything else: box the value directly.
+  "Shared `ReadPort/take!` implementation, supports three types of
+  async values:
+  - an `AsyncCompletableReader` (futurama's completable types): use
+    the `completed?`/`get!` synchronous fast-path, otherwise register
+    via `on-complete`.
+  - a plain core.async `ReadPort` (e.g. a core.async channel): call
+    `core-impl/take!` with a delegating handler that wraps the
+    callback to support recursive unrolling. If `core-impl/take!`
+    returns a value synchronously, commit the handler and recur with
+    that value.
+  - anything else: commit the handler and, if fast-resume? is true,
+    return the value boxed. Otherwise invoke the callback directly if
+    it is marked :on-caller?, or dispatch it to callback-pool.
 
-  Commits the handler up front so every branch follows the `ReadPort` contract. Without this,
-  reading a plain value inside `alts!` could leave a pending take on the other ports that
-  later reads and drops a value."
-  [x handler]
-  (let [^Lock handler handler
-        commit-handler (fn do-commit []
-                         (.lock handler)
-                         (let [take-cb (and (core-impl/active? handler)
-                                            (core-impl/commit handler))]
-                           (.unlock handler)
-                           take-cb))]
-    (when-let [cb (commit-handler)]
-      (cond
-        (async-completable-reader? x)
-        (if (completed? x)
-          (let [r (get! x)]
-            (if (async? r)
-              (do (take! r (async-reader-handler cb)) nil)
-              (box r)))
-          (do (on-complete x (async-reader-handler cb)) nil))
+  If a value is read from x the handler is always committed. This
+  function delays committing as long as possible when unrolling nested
+  asyncs. Still will very likely get weird behavior if you mix nested
+  asyncs with alts.
 
-        (async? x)
-        (if-some [v (async/poll! x)]
-          (if (async? v)
-            (do (take! v (async-reader-handler cb)) nil)
-            (box v))
-          (do (take! x (async-reader-handler cb)) nil))
+  Metadata on the callback in the handler is preserved and copied if a
+  new handler needs to be created when unnesting. This preserves
+  behavior with handler callbacks marked as :on-caller?.
 
-        :else
-        (box x)))))
+  This function always handles the fast-resume case when reading from
+  a channel. The fast-resume? argument controls if the caller of this
+  function supports fast-resume. Most futurama impls of the ReadPort
+  protocol that call this function don't support the fast-resume part
+  of the ReadPort protocol since they were originally written against
+  the public take! function in core.async which doesn't expose that
+  part of the ReadPort protocol to callers."
+  [x ^Lock handler callback-pool fast-resume?]
+  ;; n.b. the Handler protocol function commit does two things
+  ;; 1. commits the handler so it is no longer active
+  ;; 2. returns the callback to run on commit
+  (cond
+    (and (async-completable-reader? x) (completed? x))
+    (recur (get! x) handler callback-pool fast-resume?)
+
+    (async-completable-reader? x)
+    (do
+      (on-complete x (fn completable-reader-callback [result]
+                       (async-read-port-take! result handler callback-pool false)))
+      nil)
+
+    (async? x)
+    (when-some [result (->> (fn do-around-callback
+                              [take-cb]
+                              ;; copy metadata to propagate :on-caller? setting
+                              (with-meta
+                                (fn read-port-recursive-callback [value]
+                                  (async-read-port-take!
+                                   value
+                                   (async/fn-handler take-cb (core-impl/blockable? handler))
+                                   callback-pool
+                                   ;; when running in anything other than the first level callback, we
+                                   ;; can't support fast resume, because we can't be sure we are likely
+                                   ;; not running on the same thread.
+                                   false))
+                                (meta take-cb)))
+                            (delegating-handler handler)
+                            (core-impl/take! x))]
+      ;; we don't check active? here because in the alts case it will
+      ;; be false.  fn-handler is hard coded to return true for
+      ;; active?, so the only place it could not be true is in an alts
+      ;; handler. Channels commit the handler even though they don't
+      ;; call the callback in the fast resume case, and committing an
+      ;; alt-handler causes active? to return false
+      (let [_ (.lock handler)
+            take-cb (core-impl/commit handler)
+            _ (.unlock handler)]
+        (when take-cb
+          (recur @result
+                 (async/fn-handler take-cb (core-impl/blockable? handler))
+                 callback-pool
+                 fast-resume?))))
+
+    :else
+    (let [_ (.lock handler)
+          take-cb (and (core-impl/active? handler)
+                       (core-impl/commit handler))
+          _ (.unlock handler)]
+      (when take-cb
+        (if fast-resume?
+          (box x)
+          (do
+            (if (:on-caller? (meta take-cb))
+              (take-cb x)
+              (.execute ^Executor callback-pool #(take-cb x)))
+            nil))))))
 
 (defn async-write-port-put!
   [x val handler]

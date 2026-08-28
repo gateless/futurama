@@ -830,3 +830,27 @@
                    (f/with-thread-factory (fn [] ::oops)
                      (throw (ex-info "boom" {})))))
       (is (identical? prior f/*thread-factory*)))))
+
+(deftest lots-of-channel-ops-in-a-loop-doesnt-blow-the-stack
+  ;; There are a couple of core.async features (on-caller, and
+  ;; fast-resume) that if not handled well could cause code like this
+  ;; to stackoverflow at a few different places.
+  ;;
+  ;; if on-caller is on where it shouldn't be the stackoverflows are
+  ;; likely to be so deep in the channel machinery they will not buble
+  ;; out to anywhere but maybe get printed to stderr.
+  ;;
+  ;; if fast-resume is not well supported you can get a mix of failure cases
+  ;; 1. very visible stackoverflows
+  ;; 2. again stackoverflows deep in channel code that go to stderr if anywhere
+  ;; 3. everything just hangs
+  ;;
+  ;; when I have gotten this test to fail using deferreds, the
+  ;; stackoverflow error is printed from some random manifold thread,
+  ;; and the test then still passes :/
+  (let [cs (vec (repeatedly 10000 #(async (!<! (clojure.core.async/timeout (rand-int 1000))))))]
+    (!<!!
+     (async
+       (doseq [c cs]
+         (!<! c))))
+    (is true)))

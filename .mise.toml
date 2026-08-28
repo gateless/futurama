@@ -1,6 +1,4 @@
-[tool_alias]
-clojure = "https://github.com/asdf-community/asdf-clojure.git"
-
 [tools]
-clojure = "1.12"
+## clojure was dropped from the mise registry, so name the asdf backend explicitly
+"asdf:https://github.com/asdf-community/asdf-clojure.git" = "1.12"
 java = "corretto-25"

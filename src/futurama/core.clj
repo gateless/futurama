@@ -416,17 +416,18 @@
   - Will return nil if closed.
   - Will park if nothing is available.
   - Will throw if an Exception is taken from port.
+  - Will throw if the raw value is a Throwable.
   - Will return the raw value if it is not a ReadPort
   - Will fully read through any async result returned"
   [v]
   (if (symbol? v)
     `(if (impl/async? ~v)
        (<! (rdr ~v))
-       ~v)
+       (rte ~v))
     `(let [v# ~v]
        (if (impl/async? v#)
          (<! (rdr v#))
-         v#))))
+         (rte v#)))))
 
 (defmacro !<!*
   "Like !<! but works with collections of async values"
@@ -443,17 +444,18 @@
   - Will return nil if closed.
   - Will block if nothing is available.
   - Will throw if a Exception is taken from port.
+  - Will throw if the raw value is a Throwable.
   - Will return the raw value if it is not a ReadPort
   - Will fully read through any async result returned"
   [v]
   (if (symbol? v)
     `(if (impl/async? ~v)
        (<!! (rdr ~v))
-       ~v)
+       (rte ~v))
     `(let [v# ~v]
        (if (impl/async? v#)
          (<!! (rdr v#))
-         v#))))
+         (rte v#)))))
 
 (defmacro async-for
   "works like a for macro, but supports core.async operations.
@@ -923,7 +925,9 @@
 (defn ->future
   "Converts any value into a CompletableFuture, reading
   through any async result returned inside or returning
-  a completed future for non-async objects."
+  a completed future for non-async objects. A raw Throwable
+  completes the future exceptionally, the same way it does
+  when read out of an async result."
   [val]
   (cond
     (instance? CompletableFuture val)
@@ -941,4 +945,5 @@
       fut)
 
     :else
-    (CompletableFuture/completedFuture val)))
+    (doto (CompletableFuture.)
+      (impl/complete! val))))

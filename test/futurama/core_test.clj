@@ -10,7 +10,7 @@
             [futurama.impl :as impl]
             [futurama.core-async-patching :as cap])
   (:import [clojure.lang ExceptionInfo]
-           [java.util.concurrent CompletableFuture Executor ExecutorService Executors TimeUnit]))
+           [java.util.concurrent CompletableFuture ExecutionException Executor ExecutorService Executors TimeUnit]))
 
 (defn async-fixture
   [f]
@@ -631,6 +631,52 @@
       (is (= 1 (<!! (async (!<! (async (swap! calls inc)))))))
       (is (= 1 @calls)))))
 
+(deftest raw-throwable-rethrow
+  ;; The non-async fast path must still honor the rethrow contract: a raw Throwable
+  ;; is an error, not a value. 1.4.7 added the fast path without it, so `!<!` handed
+  ;; the exception back to the caller and error handling downstream went silent.
+  (testing "!<!! throws a raw Throwable"
+    (is (thrown-with-msg?
+         ExceptionInfo #"foobar"
+         (!<!! (ex-info "foobar" {})))))
+  (testing "!<! throws a raw Throwable"
+    (<!!
+     (async
+       (is (thrown-with-msg?
+            ExceptionInfo #"foobar"
+            (!<! (ex-info "foobar" {})))))))
+  ;; a symbol argument expands through a different branch of the macro than an
+  ;; arbitrary expression does, so both need covering
+  (testing "!<!! throws a raw Throwable bound to a symbol"
+    (let [t (ex-info "foobar" {})]
+      (is (thrown-with-msg?
+           ExceptionInfo #"foobar"
+           (!<!! t)))))
+  (testing "!<! throws a raw Throwable bound to a symbol"
+    (let [t (ex-info "foobar" {})]
+      (<!!
+       (async
+         (is (thrown-with-msg?
+              ExceptionInfo #"foobar"
+              (!<! t)))))))
+  (testing "!<!! unwraps an ExecutionException and throws its cause"
+    (is (thrown-with-msg?
+         ExceptionInfo #"foobar"
+         (!<!! (ExecutionException. (ex-info "foobar" {}))))))
+  (testing "!<!* throws when the collection holds a raw Throwable"
+    (<!!
+     (async
+       (is (thrown-with-msg?
+            ExceptionInfo #"foobar"
+            (!<!* [1 (ex-info "foobar" {}) 3]))))))
+  (testing "!<!! evaluates a raw Throwable argument expression exactly once"
+    (let [calls (atom 0)]
+      (is (thrown-with-msg?
+           ExceptionInfo #"foobar"
+           (!<!! (do (swap! calls inc)
+                     (ex-info "foobar" {})))))
+      (is (= 1 @calls)))))
+
 (deftest async-reader-read-port-take
   (testing "reads a plain (non-async) wrapped value directly"
     (is (= 42 (<!! (f/->async-reader 42))))
@@ -702,7 +748,10 @@
   (testing "can use non-async value as CompletableFuture"
     (let [val ::foobar
           fut (f/->future val)]
-      (is (= ::foobar @fut)))))
+      (is (= ::foobar @fut))))
+  (testing "raw Throwable completes the future exceptionally"
+    (let [fut (f/->future (ex-info "foobar" {}))]
+      (is (thrown-with-msg? Exception #"foobar" @fut)))))
 
 (deftest ->executor-service-test
   (testing "ExecutorService is returned identically (no double-wrapping)"
